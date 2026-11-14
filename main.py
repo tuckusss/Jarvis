@@ -14,6 +14,10 @@ def package_check() -> int:
     import vosk
     import sounddevice
     import pyttsx3
+    import kokoro_onnx
+    from jarvis.neural_voice import neural_available
+    if not neural_available():
+        raise RuntimeError("Bundled neural voice model or voice definitions missing")
     from PySide6 import QtWidgets, QtGui, QtCore
     from jarvis.wake_model import packaged_model, is_valid_model
     if not is_valid_model(packaged_model()):
@@ -47,12 +51,26 @@ def offline_inference_check() -> int:
         runtime.stop()
 
 
+def offline_voice_check() -> int:
+    """Synthesize a real offline neural speech sample without audio hardware."""
+    from jarvis.neural_voice import synthesize_neural_sample
+    audio, rate = synthesize_neural_sample()
+    if rate < 16000 or len(audio) < 8000:
+        raise RuntimeError("Offline voice generation produced no usable audio")
+    return 0
+
+
 if __name__ == "__main__":
     if "--package-check" in sys.argv:
         try:
             sys.exit(package_check())
         except Exception as exc:
             print(f"Package check failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+    if "--offline-voice-check" in sys.argv:
+        try:
+            sys.exit(offline_voice_check())
+        except Exception:
             sys.exit(1)
     if "--offline-inference-check" in sys.argv:
         try:
