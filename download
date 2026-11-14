@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+.env
+credentials.json
+token.json
+models/
+*.log
+
+# Do not commit secrets, signing certificates, or produced installers
+*.pfx
+*.p12
+*.p8
+*.exe
