@@ -12,14 +12,16 @@ import numpy as np
 SAMPLE_RATE = 16000
 
 
-def record_phrase(max_seconds=11, stop_after_silence=1.3) -> bytes:
+def record_phrase(max_seconds=9, stop_after_silence=0.7, start_timeout_s=4.0) -> bytes:
     import sounddevice as sd
     audio = []
     started = False
     silent_chunks = 0
     blocksize = 1600  # 0.1 seconds
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=blocksize, dtype="int16", channels=1) as stream:
-        for _ in range(int(max_seconds * SAMPLE_RATE / blocksize)):
+        for index in range(int(max_seconds * SAMPLE_RATE / blocksize)):
+            if not started and index * blocksize / SAMPLE_RATE >= start_timeout_s:
+                break
             chunk, overflowed = stream.read(blocksize)
             b = bytes(chunk)
             audio.append(b)
@@ -78,60 +80,147 @@ def transcribe_local(wav_bytes: bytes, model_path: str) -> str:
 
 
 class Speaker:
-    """Single non-blocking TTS worker to avoid simultaneous SAPI engine calls."""
-    def __init__(self, on_finished=None):
+    """Persistent neural TTS worker, with offline SAPI fallback.
+
+    Each new utterance invalidates the previous one and replaces queued speech.
+    No network, OpenAI key or extra installs are needed by the end user.
+    """
+    def __init__(self, on_finished=None, on_error=None, engine="neural",
+                 voice="bm_george", speed=1.0):
         self.on_finished = on_finished
-        self.pending: queue.Queue = queue.Queue(maxsize=8)
+        self.on_error = on_error
+        self.pending: queue.Queue = queue.Queue(maxsize=2)
         self.stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._neural = None
+        self._sapi = None
+        self.configure(engine=engine, voice=voice, speed=speed)
         self.thread = threading.Thread(target=self._work, daemon=True, name="jarvis-tts")
         self.thread.start()
+
+    def configure(self, *, engine: str, voice: str, speed: float):
+        from .neural_voice import VOICE_CHOICES
+        with self._lock:
+            self.engine = engine if engine in {"neural", "sapi"} else "neural"
+            self.voice = voice if voice in VOICE_CHOICES else "bm_george"
+            self.speed = max(0.8, min(1.3, float(speed)))
 
     def speak(self, text: str) -> None:
         if not text.strip() or self.stop_event.is_set():
             return
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+            while True:
+                try:
+                    self.pending.get_nowait()
+                except queue.Empty:
+                    break
+            self.pending.put_nowait((generation, text[:2500]))
+        # Interrupt previous playback, but only if a newer generation exists.
         try:
-            self.pending.put_nowait(text[:2500])
-        except queue.Full:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
             pass
+
+    def _active(self, generation: int) -> bool:
+        with self._lock:
+            return not self.stop_event.is_set() and generation == self._generation
+
+    def _speak_neural(self, text: str, generation: int, voice: str, speed: float):
+        from .neural_voice import create_neural_synthesizer, speech_segments
+        import sounddevice as sd
+        if self._neural is None:
+            self._neural = create_neural_synthesizer()
+        lang = "en-gb" if voice.startswith("b") else "en-us"
+        for segment in speech_segments(text):
+            if not self._active(generation):
+                break
+            samples, sample_rate = self._neural.create(segment, voice=voice, speed=speed, lang=lang)
+            if not self._active(generation):
+                break
+            # Playback of one continuous synthesised segment avoids tiny audio
+            # chunks and prevents the discontinuities heard with repeated SAPI calls.
+            sd.play(samples, samplerate=sample_rate, blocking=True)
+
+    def _speak_sapi(self, text: str, voice: str, speed: float):
+        # Initialise COM inside this persistent worker, never on the Qt UI thread.
+        if self._sapi is None:
+            import pyttsx3
+            self._sapi = pyttsx3.init()
+            try:
+                preferred = ("george", "david") if voice.startswith("bm") else ("hazel", "zira")
+                installed = self._sapi.getProperty("voices")
+                match = next((v for hint in preferred for v in installed
+                              if hint in (v.name + " " + v.id).lower()), None)
+                if match:
+                    self._sapi.setProperty("voice", match.id)
+            except Exception:
+                pass
+        self._sapi.setProperty("rate", int(185 * speed))
+        self._sapi.say(text[:900])
+        self._sapi.runAndWait()
 
     def _work(self):
         try:
-            import pyttsx3
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 178)
-        except Exception:
-            # Surface failure to the owner so its wake listener is not held off.
+            import pythoncom
+            pythoncom.CoInitialize()
+            com_ready = True
+        except ImportError:
+            com_ready = False
+        try:
             while not self.stop_event.is_set():
                 try:
-                    entry = self.pending.get(timeout=0.2)
-                    if entry is None: break
-                    if self.on_finished: self.on_finished()
+                    task = self.pending.get(timeout=0.2)
                 except queue.Empty:
                     continue
-            return
-        while not self.stop_event.is_set():
-            try:
-                text = self.pending.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if text is None:
-                break
-            try:
-                engine.say(text)
-                engine.runAndWait()
-            except Exception:
-                pass
-            finally:
-                if self.on_finished:
-                    self.on_finished()
+                if task is None:
+                    break
+                generation, text = task
+                if not self._active(generation):
+                    continue
+                with self._lock:
+                    engine, voice, speed = self.engine, self.voice, self.speed
+                try:
+                    if engine == "neural":
+                        try:
+                            self._speak_neural(text, generation, voice, speed)
+                        except Exception as exc:
+                            if self.on_error and self._active(generation):
+                                self.on_error("Neural voice unavailable; using Windows voice. " + type(exc).__name__)
+                            if self._active(generation):
+                                self._speak_sapi(text, voice, speed)
+                    else:
+                        self._speak_sapi(text, voice, speed)
+                except Exception as exc:
+                    if self.on_error and self._active(generation):
+                        self.on_error("Speech output unavailable: " + type(exc).__name__)
+                finally:
+                    if self.on_finished and self._active(generation):
+                        self.on_finished()
+        finally:
+            if com_ready:
+                try:
+                    import pythoncom
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
     def stop(self):
         self.stop_event.set()
+        with self._lock:
+            self._generation += 1
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
         try:
             self.pending.put_nowait(None)
         except queue.Full:
             pass
-
 
 class WakeListener:
     """Offline wake-word (small Vosk model required). The microphone isn't sent online.
