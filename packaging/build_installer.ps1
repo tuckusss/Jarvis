@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipDependencyInstall,
-    [string]$Version = "0.5.0"
+    [string]$Version = "0.6.0"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -45,6 +45,11 @@ if (-not (Test-Path (Join-Path $voskModel 'am\final.mdl'))) {
 # Ollama dependency. Assets are verified against pinned upstream SHA-256 digests.
 & (Join-Path $root 'packaging\fetch_offline_ai.ps1')
 Require-LastExit "offline AI model/runtime acquisition"
+& (Join-Path $root 'packaging\fetch_neural_voice.ps1')
+Require-LastExit "verified offline neural speech acquisition"
+if (-not (Test-Path (Join-Path $root 'assets\tts\kokoro-v1.0.int8.onnx'))) {
+    throw "Offline neural voice model missing; refusing an incomplete installer"
+}
 $localServer = Join-Path $root 'assets\local_runtime\llama-server.exe'
 $localModel = Join-Path $root 'assets\models\qwen2.5-1.5b-instruct-q4_k_m.gguf'
 if (-not (Test-Path $localServer) -or -not (Test-Path $localModel)) {
@@ -60,6 +65,11 @@ $pyinstallerArgs = @(
     "--add-data", ("$voskModel;models/vosk-model-small-en-us-0.15"),
     "--add-data", ("$localModel;models"),
     "--add-data", ("$root\assets\licenses;licenses"),
+    "--add-data", ("$root\assets\tts;tts"),
+    "--collect-all", "kokoro_onnx",
+    "--collect-all", "onnxruntime",
+    "--collect-all", "phonemizer",
+    "--collect-all", "espeakng_loader",
     "--add-binary", ("$root\assets\local_runtime;local_runtime"),
     "--collect-all", "keyring",
     "--collect-all", "googleapiclient",
@@ -79,6 +89,8 @@ if (-not (Test-Path $exe)) { throw "PyInstaller output not found: $exe" }
 # An import-only smoke test runs even on CI without a desktop or microphone.
 $p = Start-Process -FilePath $exe -ArgumentList '--package-check' -Wait -PassThru -WindowStyle Hidden
 if ($p.ExitCode -ne 0) { throw "Packaged app import check failed (exit code $($p.ExitCode))" }
+$p = Start-Process -FilePath $exe -ArgumentList '--offline-voice-check' -Wait -PassThru -WindowStyle Hidden
+if ($p.ExitCode -ne 0) { throw "Packaged offline neural speech synthesis failed (exit code $($p.ExitCode))" }
 
 $isccCandidates = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
