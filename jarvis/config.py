@@ -27,6 +27,9 @@ class Config:
     model: str = "gpt-5.5"
     transcription_model: str = "gpt-transcribe"
     voice_enabled: bool = True
+    voice_engine: str = "neural"
+    voice_name: str = "bm_george"
+    voice_speed: float = 1.0
     wake_enabled: bool = False
     wake_model_path: str = ""  # legacy compatibility; normally auto-discovered
     save_history: bool = True
