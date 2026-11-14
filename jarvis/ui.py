@@ -22,6 +22,7 @@ from .google_connector import GoogleConnector
 from .memory import Memory
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
+from .neural_voice import VOICE_CHOICES, neural_available
 from .wake_model import resolve_model, install_model
 from .local_ai import has_local_bundle
 
@@ -155,6 +156,7 @@ class Bridge(QObject):
     wake_detected = Signal()
     wake_error = Signal(str)
     speech_finished = Signal()
+    speech_error = Signal(str)
 
 
 class SettingsDialog(QDialog):
@@ -180,8 +182,22 @@ class SettingsDialog(QDialog):
         self.provider.setCurrentIndex(max(0, self.provider.findData(cfg.provider)))
         self.model = QLineEdit(cfg.model)
         self.model.setToolTip("Responses API model available in your OpenAI project")
-        self.voice = QCheckBox("Enable spoken replies (Windows SAPI)")
+        self.voice = QCheckBox("Enable spoken replies")
         self.voice.setChecked(cfg.voice_enabled)
+        self.voice_engine = QComboBox()
+        self.voice_engine.addItem("Natural neural voice — OFFLINE", "neural")
+        self.voice_engine.addItem("Windows built-in voice — OFFLINE", "sapi")
+        self.voice_engine.setCurrentIndex(max(0, self.voice_engine.findData(cfg.voice_engine)))
+        self.voice_choice = QComboBox()
+        for voice_id, name in VOICE_CHOICES.items():
+            self.voice_choice.addItem(name, voice_id)
+        self.voice_choice.setCurrentIndex(max(0, self.voice_choice.findData(cfg.voice_name)))
+        self.voice_speed = QComboBox()
+        self.voice_speed.addItem("Relaxed (0.9×)", 0.9)
+        self.voice_speed.addItem("Natural (1.0×)", 1.0)
+        self.voice_speed.addItem("Quick (1.1×)", 1.1)
+        self.voice_speed.addItem("Brisk (1.2×)", 1.2)
+        self.voice_speed.setCurrentIndex(max(0, self.voice_speed.findData(cfg.voice_speed)))
         self.history = QCheckBox("Save local chat history")
         self.history.setChecked(cfg.save_history)
         self.wake = QCheckBox("Enable offline 'Jarvis' wake word (no model folder needed)")
@@ -199,6 +215,9 @@ class SettingsDialog(QDialog):
         form.addRow("OpenAI API key (optional)", self.key)
         form.addRow("Cloud model (if used)", self.model)
         form.addRow("Speech output", self.voice)
+        form.addRow("Speech engine", self.voice_engine)
+        form.addRow("Voice", self.voice_choice)
+        form.addRow("Speaking speed", self.voice_speed)
         form.addRow("Local memory", self.history)
         form.addRow("Wake listener", self.wake)
         model_path = resolve_model(cfg.wake_model_path)
@@ -282,6 +301,9 @@ class SettingsDialog(QDialog):
             self.cfg.provider = self.provider.currentData()
             self.cfg.model = self.model.text().strip() or "gpt-5.5"
             self.cfg.voice_enabled = self.voice.isChecked()
+            self.cfg.voice_engine = self.voice_engine.currentData()
+            self.cfg.voice_name = self.voice_choice.currentData()
+            self.cfg.voice_speed = float(self.voice_speed.currentData())
             self.cfg.save_history = self.history.isChecked()
             self.cfg.wake_enabled = self.wake.isChecked()
             # Vosk model path is discovered automatically from bundled files or app data.
@@ -308,10 +330,16 @@ class JarvisWindow(QMainWindow):
         self.bridge.wake_detected.connect(self._on_wake)
         self.bridge.wake_error.connect(self._wake_error)
         self.bridge.speech_finished.connect(self._on_speech_finished)
+        self.bridge.speech_error.connect(self._notice)
         self.config = Config.load()
         self.memory = Memory()
         self.google = GoogleConnector(self.config)
-        self.speaker = Speaker(on_finished=lambda: self.bridge.speech_finished.emit())
+        self.speaker = Speaker(
+            on_finished=lambda: self.bridge.speech_finished.emit(),
+            on_error=lambda error: self.bridge.speech_error.emit(error),
+            engine=self.config.voice_engine, voice=self.config.voice_name,
+            speed=self.config.voice_speed,
+        )
         self._speaking = False
         self.wake_listener = None
         self._installing_wake_model = False
@@ -332,6 +360,8 @@ class JarvisWindow(QMainWindow):
         self._poll_reminders()
         self._refresh_stats()
         self._start_wake()
+        if self.config.provider in ("local", "hybrid"):
+            QTimer.singleShot(2500, self._warm_local_brain)
         self._append("SYSTEM", "JARVIS initialised. Offline AI is the default; no OpenAI API key is required. Enable the hands-free wake listener in Settings. Closing the window keeps the tray assistant running.")
         if not (data_dir() / "onboarding_complete.flag").exists():
             QTimer.singleShot(500, self._first_launch)
@@ -458,6 +488,11 @@ class JarvisWindow(QMainWindow):
         if not busy and self.config.wake_enabled and not self._speaking:
             self._start_wake()
 
+    def _warm_local_brain(self):
+        if not self._quitting and self.config.provider in ("local", "hybrid"):
+            self._run_task(lambda: self.agent.local_runtime.client(), lambda result: None,
+                           lambda error: self._append("SYSTEM", "Local AI prewarm unavailable: " + error[:130]))
+
     def _run_task(self, func, done, error=None):
         task = Task(func)
         task.signals.done.connect(done)
@@ -580,6 +615,8 @@ class JarvisWindow(QMainWindow):
         if dlg.exec() == QDialog.Accepted:
             self.agent.client = None  # update API key and model
             self.toggle_voice(update_only=True)
+            self.speaker.configure(engine=self.config.voice_engine,
+                                   voice=self.config.voice_name, speed=self.config.voice_speed)
             self._start_wake()
             self._sync_mic_action()
             self._refresh_stats()
