@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 from datetime import datetime
 from .config import api_key
 from .tools import TOOLS
@@ -79,7 +80,7 @@ class Agent:
                 self.memory.message("assistant", result)
             return result
         client = self.local_runtime.client()
-        recent = self.memory.recent(8) if self.config.save_history else []
+        recent = self.memory.recent(6) if self.config.save_history else []
         messages = [{"role": "system", "content": PERSONA + "\n"
                      "You are running entirely offline on a small local model; be brief, "
                      "admit uncertainty, and use tools only when appropriate. Local date/time: "
@@ -89,22 +90,27 @@ class Agent:
             "name": x["name"], "description": x["description"],
             "parameters": x["parameters"]}} for x in TOOLS
             if x["name"] != "inspect_screen"]
+        # Normal conversation is by far the most common speech use case.
+        # Omitting twenty tool schemas reduces prefill CPU work substantially.
+        wants_tools = bool(re.search(
+            r"\b(open|launch|start|search|find|read|email|gmail|calendar|event|"
+            r"schedule|send|remember|remind|notes|files|screen|computer|"
+            r"system|battery|status)\b", text, flags=re.I
+        ))
         final = ""
-        for _ in range(4):
+        for _ in range(4 if wants_tools else 1):
+            request = dict(model=MODEL_ALIAS, messages=messages, temperature=0.2,
+                           max_tokens=240 if wants_tools else 150, stream=False)
+            if wants_tools:
+                request.update(tools=schemas, tool_choice="auto")
             try:
-                response = client.chat.completions.create(
-                    model=MODEL_ALIAS, messages=messages, tools=schemas,
-                    tool_choice="auto", temperature=0.2, max_tokens=600, stream=False,
-                )
+                response = client.chat.completions.create(**request)
             except Exception as exc:
-                # Older llama.cpp backends and CPU builds may not support tool
-                # parsing for this small model. Keep ordinary conversation usable.
-                if "tool" not in str(exc).lower():
+                if not wants_tools or "tool" not in str(exc).lower():
                     raise
-                response = client.chat.completions.create(
-                    model=MODEL_ALIAS, messages=messages, temperature=0.2,
-                    max_tokens=600, stream=False,
-                )
+                request.pop("tools", None)
+                request.pop("tool_choice", None)
+                response = client.chat.completions.create(**request)
             message = response.choices[0].message
             calls = (message.tool_calls or [])[:3]
             if not calls:
