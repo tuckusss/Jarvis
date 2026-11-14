@@ -1,50 +1,73 @@
-name: Build JARVIS Windows installer
+name: Build, install-test and stage JARVIS Windows Setup
+
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+
+# Draft releases are deliberately not public distribution. A human must complete
+# microphone, Smart App Control and security validation and provide trusted signing.
 permissions:
   contents: write
+
 jobs:
-  build:
+  windows-installer:
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - name: Validate complete source checkout
-        shell: pwsh
-        run: |
-          @('main.py','requirements.txt','packaging/build_installer.ps1','packaging/JARVIS.iss','jarvis/ui.py','jarvis/local_ai.py','jarvis/wake_model.py') | ForEach-Object {
-            if (-not (Test-Path $_)) { throw "Source file missing: $_. Upload the complete JARVIS v0.5 project before building." }
-          }
-      - uses: actions/setup-python@v5
+      - name: Checkout verified source
+        uses: actions/checkout@v4
+
+      - name: Install Python for BUILD RUNNER only
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: x64
           cache: pip
-      - name: Build dependencies
+
+      - name: Install build dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt 'pyinstaller>=6.10,<7'
-          choco install innosetup --yes --no-progress
-      - name: Build verified offline models and installer
+
+      - name: Install Inno Setup for BUILD RUNNER only
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Bundle checked offline models and build setup EXE
         shell: pwsh
         env:
           JARVIS_SIGNING_PFX_BASE64: ${{ secrets.JARVIS_SIGNING_PFX_BASE64 }}
           JARVIS_SIGNING_PASSWORD: ${{ secrets.JARVIS_SIGNING_PASSWORD }}
         run: .\packaging\build_installer.ps1 -SkipDependencyInstall -Version '0.5.0'
-      - name: Smoke-test installation
+
+      - name: Install the actual setup and verify local inference and uninstallation
         shell: pwsh
         run: .\packaging\smoke_install.ps1 -Installer '.\dist\JARVIS-Setup-0.5.0-x64.exe'
-      - name: Verify checksum and size
+
+      - name: Verify completed setup EXE and record SHA256
         shell: pwsh
         run: |
-          $f = '.\dist\JARVIS-Setup-0.5.0-x64.exe'
-          if ((Get-Item $f).Length -lt 500MB) { throw 'Installer is too small for bundled offline model' }
-          Get-FileHash $f -Algorithm SHA256 | Format-List
-          Get-AuthenticodeSignature $f | Format-List
-      - name: Store private draft installer candidate
+          $file = (Resolve-Path '.\dist\JARVIS-Setup-0.5.0-x64.exe').Path
+          $size = (Get-Item $file).Length
+          if ($size -lt 500000000) { throw 'Setup unexpectedly small; bundled models likely missing' }
+          if ($size -ge 2147483648) { throw 'Setup exceeds GitHub Release 2GiB-per-file maximum' }
+          $signature = (Get-AuthenticodeSignature $file).Status
+          Write-Host "SETUP_SIZE=$size"
+          Write-Host "SETUP_SIGNATURE=$signature"
+          Get-FileHash $file -Algorithm SHA256 | Format-List
+          Add-Content $env:GITHUB_STEP_SUMMARY "JARVIS Setup built and install-tested; SHA256 below."
+          Add-Content $env:GITHUB_STEP_SUMMARY ((Get-FileHash $file -Algorithm SHA256).Hash)
+          Add-Content $env:GITHUB_STEP_SUMMARY "Signature: $signature. Draft development candidate only."
+
+      - name: Put the EXE in a PRIVATE DRAFT release (not Actions artifact quota)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "jarvis-ci-${{ github.run_id }}" '.\dist\JARVIS-Setup-0.5.0-x64.exe' --draft --prerelease --title 'JARVIS Windows installation candidate' --notes 'Build candidate only; signing and physical Windows voice testing required before distribution.' --target '${{ github.sha }}'
+          $tag = "jarvis-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+          gh release create $tag '.\dist\JARVIS-Setup-0.5.0-x64.exe' `
+            --title "JARVIS v0.5 Windows build candidate ${{ github.run_number }}" `
+            --notes "Installed setup, imported dependencies, ran offline model inference, and uninstalled successfully on Windows CI. THIS IS A DRAFT CANDIDATE, NOT A SIGNED/RELEASED PRODUCT. Additional Windows 10/11 audio, wake-word, GUI, security, and Smart App Control tests and trusted code signing are required before public distribution." `
+            --draft --prerelease --target '${{ github.sha }}'
