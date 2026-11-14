@@ -88,14 +88,15 @@ class LocalRuntime:
             args = [
                 str(runner_path()), "--model", str(model_path()),
                 "--alias", MODEL_ALIAS, "--host", "127.0.0.1", "--port", str(self._port),
-                "--ctx-size", "4096", "--threads", str(min(max(2, cpus - 1), 8)),
+                "--ctx-size", "4096", "--threads", str(min(max(2, cpus - 2), 6)),
                 "--n-gpu-layers", "0", "--no-webui", "--api-key", self._token,
             ]
             kwargs = {"cwd": str(runner_path().parent), "stdin": subprocess.DEVNULL,
                       "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
                       "shell": False}
             if os.name == "nt":
-                kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                kwargs["creationflags"] = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                           | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
             self.proc = self._popen(args, **kwargs)
             until = time.monotonic() + self.timeout
             while time.monotonic() < until:
