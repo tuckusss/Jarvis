@@ -130,7 +130,7 @@ class SearchMemoryTests(TestCase):
                 db.message("user", "Check the warehouse location before sending")
                 db.message("assistant", "Warehouse location is listed")
                 self.assertEqual(len(db.search_messages("warehouse")), 2)
-                self.assertEqual(db.search_messages("%"), [])
+                self.assertEqual(db.search_messages("%%"), [])
                 with self.assertRaises(ValueError):
                     db.search_messages("")
             finally:
