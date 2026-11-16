@@ -41,6 +41,10 @@ class Config:
     google_write_enabled: bool = False
     sites: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SITES))
     custom_folder: str = ""  # optional extra searchable folder; explicit user opt-in
+    project_folders: dict[str, str] = field(default_factory=lambda: {
+        "PayCore": str(Path.home() / "Desktop" / "PayCore")
+    })  # Paths are local; no code or project files are uploaded automatically.
+
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
