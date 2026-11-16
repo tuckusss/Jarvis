@@ -638,11 +638,14 @@ class JarvisWindow(QMainWindow):
             self.response_speed.setText(
                 f"FIRST SPEECH   {self._first_audio_latency:.1f} s"
             )
-        if not self._speaking:
+        if not self._streamed_speech:
             self._streamed_speech = True
-            self._say(sentence)
+            if self.wake_listener:
+                self.wake_listener.stop()
+                self.wake_listener = None
+            self._speaking = True
+            self.speaker.begin_stream(sentence)
         else:
-            self._streamed_speech = True
             self.speaker.enqueue(sentence)
 
     def stop_speaking(self):
@@ -658,7 +661,9 @@ class JarvisWindow(QMainWindow):
             elapsed = time.monotonic() - self._request_started
             self.response_speed.setText(f"ANSWER   {elapsed:.1f} s")
         self._append("JARVIS", str(answer))
-        if self.config.voice_enabled and not self._streamed_speech and not self._speech_muted:
+        if self._streamed_speech and not self._speech_muted:
+            self.speaker.end_stream()
+        elif self.config.voice_enabled and not self._speech_muted:
             self._say(str(answer))
         self._set_busy(False)
 
@@ -667,6 +672,8 @@ class JarvisWindow(QMainWindow):
             elapsed = time.monotonic() - self._request_started
             self.response_speed.setText(f"FAILED   {elapsed:.1f} s")
         self._append("SYSTEM", "Operation failed: " + err)
+        if self._streamed_speech and not self._speech_muted:
+            self.speaker.end_stream()
         self._set_busy(False)
 
     def _listen(self):
