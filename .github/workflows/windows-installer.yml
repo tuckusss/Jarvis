@@ -7,6 +7,10 @@ on:
 
 # Draft releases are deliberately not public distribution. A human must complete
 # microphone, Smart App Control and security validation and provide trusted signing.
+concurrency:
+  group: jarvis-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 

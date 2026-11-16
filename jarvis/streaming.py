@@ -6,7 +6,7 @@ import re
 
 class SentenceBuffer:
     """Accumulate model tokens until a human-sized phrase can be spoken."""
-    def __init__(self, *, min_chars: int = 28, max_chars: int = 180):
+    def __init__(self, *, min_chars: int = 12, max_chars: int = 180):
         self.min_chars = min_chars
         self.max_chars = max_chars
         self.pending = ""
