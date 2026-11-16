@@ -96,7 +96,7 @@ class Agent:
         ):
             return self.ask(text, cancel_event=cancel_event) if cancel_event is not None else self.ask(text)
         from .streaming import SentenceBuffer
-        client = self.local_runtime.client()
+        client = self.local_runtime.client(cancel_event=cancel_event)
         recent = self.memory.recent(6) if self.config.save_history else []
         messages = [
             {"role": "system", "content": PERSONA +
@@ -151,7 +151,7 @@ class Agent:
                 self.memory.message("user", text)
                 self.memory.message("assistant", result)
             return result
-        client = self.local_runtime.client()
+        client = self.local_runtime.client(cancel_event=cancel_event)
         recent = self.memory.recent(6) if self.config.save_history else []
         messages = [{"role": "system", "content": PERSONA + "\n"
                      "You are running entirely offline on a small local model; be brief, "
