@@ -61,6 +61,38 @@ class CancellationTests(TestCase):
         self.assertIn("locked", result["error"].lower())
         self.assertEqual(self.memory.recall(), [])
 
+    def test_local_runtime_aborts_before_launch_when_cancelled(self):
+        from jarvis.local_ai import LocalRuntime
+        request = Event()
+        request.set()
+        runtime = LocalRuntime(popen=MagicMock())
+        with self.assertRaises(RequestCancelled):
+            runtime.client(cancel_event=request)
+        runtime._popen.assert_not_called()
+
+    def test_local_runtime_terminates_process_when_cancelled_while_loading(self):
+        from unittest.mock import patch
+        from pathlib import Path
+        from jarvis.local_ai import LocalRuntime
+        request = Event()
+        process = MagicMock()
+        process.poll.return_value = None
+        runtime = LocalRuntime(popen=MagicMock(return_value=process),
+                               connection_timeout=3)
+        def fail_health():
+            request.set()
+            return False
+        with patch("jarvis.local_ai.has_local_bundle", return_value=True), \
+             patch("jarvis.local_ai.runner_path", return_value=Path("C:/dummy/llama-server.exe")), \
+             patch("jarvis.local_ai.model_path", return_value=Path("C:/dummy/model.gguf")), \
+             patch("jarvis.local_ai._free_port", return_value=51122), \
+             patch.object(runtime, "_healthy", side_effect=fail_health), \
+             patch("jarvis.local_ai.time.sleep", return_value=None):
+            with self.assertRaises(RequestCancelled):
+                runtime.client(cancel_event=request)
+        process.terminate.assert_called_once()
+        self.assertIsNone(runtime.proc)
+
     def test_local_cancellation_is_not_routed_to_cloud(self):
         request = Event()
         self.cfg.provider = "hybrid"
