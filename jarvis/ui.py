@@ -24,6 +24,7 @@ from .google_connector import GoogleConnector
 from .memory import Memory
 from .owner_auth import OwnerGate
 from .gaming import GamingState, installed_game_running
+from .audio_devices import input_devices, microphone_probe
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
 from .neural_voice import VOICE_CHOICES, neural_available
@@ -207,6 +208,14 @@ class SettingsDialog(QDialog):
         self.history.setChecked(cfg.save_history)
         self.wake = QCheckBox("Enable offline 'Jarvis' wake word (no model folder needed)")
         self.wake.setChecked(cfg.wake_enabled)
+        self.microphones = QComboBox()
+        self.microphones.addItem("Windows default microphone", None)
+        for device_id, label in input_devices():
+            self.microphones.addItem(f"{label} (#{device_id})", device_id)
+        selected_mic = self.microphones.findData(cfg.microphone_device)
+        self.microphones.setCurrentIndex(max(0, selected_mic))
+        self.microphone_test = QPushButton("TEST SELECTED MICROPHONE")
+        self.microphone_test.clicked.connect(self._test_microphone)
         self.gaming_enabled = QCheckBox("Automatically detect Crusader Kings III / Warband")
         self.gaming_enabled.setChecked(cfg.gaming_mode_enabled)
         self.gaming_pause_wake = QCheckBox("Pause wake listening while gaming")
@@ -231,6 +240,8 @@ class SettingsDialog(QDialog):
         form.addRow("Speaking speed", self.voice_speed)
         form.addRow("Local memory", self.history)
         form.addRow("Wake listener", self.wake)
+        form.addRow("Input microphone", self.microphones)
+        form.addRow("Microphone diagnostics", self.microphone_test)
         form.addRow("Gaming focus", self.gaming_enabled)
         form.addRow("Gaming microphone", self.gaming_pause_wake)
         form.addRow("Gaming speech", self.gaming_mute_speech)
@@ -262,6 +273,34 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.apply)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+
+    def _test_microphone(self):
+        """Half-second local volume check, only when the user clicks Test."""
+        self.microphone_test.setEnabled(False)
+        self.microphone_test.setText("TESTING MICROPHONE…")
+        target = self.microphones.currentData()
+        self._mic_task = Task(lambda: microphone_probe(target))
+        self._mic_task.signals.done.connect(self._microphone_test_ok)
+        self._mic_task.signals.failed.connect(self._microphone_test_failed)
+        QThreadPool.globalInstance().start(self._mic_task)
+
+    def _microphone_test_ok(self, result):
+        self.microphone_test.setEnabled(True)
+        self.microphone_test.setText("TEST SELECTED MICROPHONE")
+        QMessageBox.information(
+            self, "Microphone test",
+            f"Microphone opened successfully. Average audio level: {result['rms']:.0f}. "
+            "Audio was neither recorded to disk nor uploaded."
+        )
+
+    def _microphone_test_failed(self, _error):
+        self.microphone_test.setEnabled(True)
+        self.microphone_test.setText("TEST SELECTED MICROPHONE")
+        QMessageBox.warning(
+            self, "Microphone unavailable",
+            "Could not read this microphone. Check Windows microphone privacy settings "
+            "and whether another application has exclusive access."
+        )
 
     def _test_api_key(self):
         """User-initiated, asynchronous credential validation without logging secrets."""
@@ -320,6 +359,7 @@ class SettingsDialog(QDialog):
             self.cfg.voice_speed = float(self.voice_speed.currentData())
             self.cfg.save_history = self.history.isChecked()
             self.cfg.wake_enabled = self.wake.isChecked()
+            self.cfg.microphone_device = self.microphones.currentData()
             self.cfg.gaming_mode_enabled = self.gaming_enabled.isChecked()
             self.cfg.gaming_pause_wake = self.gaming_pause_wake.isChecked()
             self.cfg.gaming_mute_speech = self.gaming_mute_speech.isChecked()
@@ -639,7 +679,7 @@ class JarvisWindow(QMainWindow):
         self._set_busy(True, "MICROPHONE ACTIVE / SPEAK NOW")
         self.mic_status.setText("MICROPHONE: RECORDING")
         def capture_and_transcribe():
-            wav = record_phrase()
+            wav = record_phrase(device=self.config.microphone_device)
             if self.config.provider == "openai":
                 return transcribe(wav, self.agent._client(), self.config.transcription_model)
             wake_model = resolve_model(self.config.wake_model_path)
@@ -856,9 +896,12 @@ class JarvisWindow(QMainWindow):
                 self._append("SYSTEM", "Downloading and verifying the offline wake model automatically (about 40 MB). Push-to-talk remains available.")
                 self._run_task(install_model, self._wake_model_installed, self._wake_model_failed)
             return
-        self.wake_listener = WakeListener(str(model),
-                                           lambda: self.bridge.wake_detected.emit(),
-                                           lambda message: self.bridge.wake_error.emit(message))
+        self.wake_listener = WakeListener(
+            str(model),
+            lambda: self.bridge.wake_detected.emit(),
+            lambda message: self.bridge.wake_error.emit(message),
+            device=self.config.microphone_device,
+        )
         self.wake_listener.start()
         self.mic_status.setText("MICROPHONE: LOCAL WAKE MODE")
 
