@@ -156,6 +156,7 @@ class Bridge(QObject):
     wake_detected = Signal()
     wake_error = Signal(str)
     speech_finished = Signal()
+    speech_sentence = Signal(str)
     speech_error = Signal(str)
 
 
@@ -330,6 +331,7 @@ class JarvisWindow(QMainWindow):
         self.bridge.wake_detected.connect(self._on_wake)
         self.bridge.wake_error.connect(self._wake_error)
         self.bridge.speech_finished.connect(self._on_speech_finished)
+        self.bridge.speech_sentence.connect(self._on_stream_sentence)
         self.bridge.speech_error.connect(self._notice)
         self.config = Config.load()
         self.memory = Memory()
@@ -341,6 +343,8 @@ class JarvisWindow(QMainWindow):
             speed=self.config.voice_speed,
         )
         self._speaking = False
+        self._streamed_speech = False
+        self._speech_muted = False
         self.wake_listener = None
         self._installing_wake_model = False
         self._busy = False
@@ -423,6 +427,9 @@ class JarvisWindow(QMainWindow):
         self.listen.setObjectName("primary")
         self.listen.clicked.connect(self._listen)
         controls.addWidget(self.listen)
+        self.stop_voice_button = QPushButton("STOP SPEAKING")
+        self.stop_voice_button.clicked.connect(self.stop_speaking)
+        controls.addWidget(self.stop_voice_button)
         self.voice_button = QPushButton("VOICE  ON" if self.config.voice_enabled else "VOICE  OFF")
         self.voice_button.clicked.connect(self.toggle_voice)
         controls.addWidget(self.voice_button)
@@ -508,8 +515,13 @@ class JarvisWindow(QMainWindow):
             self.wake_listener.stop()
         self.entry.clear()
         self._append("USER", text)
+        self._streamed_speech = False
+        self._speech_muted = False
         self._set_busy(True, "REASONING / PROCESSING REQUEST")
-        self._run_task(lambda: self.agent.ask(text), self._answer, self._fail_answer)
+        self._run_task(
+            lambda: self.agent.ask_stream(text, lambda chunk: self.bridge.speech_sentence.emit(chunk)),
+            self._answer, self._fail_answer,
+        )
 
     def _say(self, text: str):
         if not self.config.voice_enabled or not text.strip():
@@ -520,9 +532,28 @@ class JarvisWindow(QMainWindow):
         self._speaking = True
         self.speaker.speak(text)
 
+    @Slot(str)
+    def _on_stream_sentence(self, sentence: str):
+        if not self.config.voice_enabled or self._speech_muted or not sentence.strip():
+            return
+        if not self._speaking:
+            self._streamed_speech = True
+            self._say(sentence)
+        else:
+            self._streamed_speech = True
+            self.speaker.enqueue(sentence)
+
+    def stop_speaking(self):
+        """Stop speaking immediately without cancelling an in-flight safe reply."""
+        self._speech_muted = True
+        self.speaker.interrupt()
+        self._speaking = False
+        if not self._busy and self.config.wake_enabled:
+            self._start_wake()
+
     def _answer(self, answer):
         self._append("JARVIS", str(answer))
-        if self.config.voice_enabled:
+        if self.config.voice_enabled and not self._streamed_speech and not self._speech_muted:
             self._say(str(answer))
         self._set_busy(False)
 
@@ -533,6 +564,8 @@ class JarvisWindow(QMainWindow):
     def _listen(self):
         if self._busy:
             return
+        if self._speaking:
+            self.stop_speaking()
         if self.wake_listener:
             self.wake_listener.stop()
         self._set_busy(True, "MICROPHONE ACTIVE / SPEAK NOW")
@@ -735,6 +768,7 @@ class JarvisWindow(QMainWindow):
         menu = QMenu()
         menu.addAction("Open JARVIS", self._show)
         menu.addAction("Listen", self._show_and_listen)
+        menu.addAction("Stop speaking", self.stop_speaking)
         self.mic_menu_action = menu.addAction("Mute wake microphone", self._toggle_wake_microphone)
         self._sync_mic_action()
         menu.addSeparator()
