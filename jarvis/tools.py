@@ -149,6 +149,11 @@ class ToolExecutor:
                 self._audit(name, ok, "human confirmation")
                 if not ok:
                     return {"error": "Operation denied by user"}
+            # Lock or expiry may occur WHILE the confirmation dialog is open.
+            # A prior allow decision must not survive capability revocation.
+            if not self._owner_allowed():
+                self._audit(name, False, "owner access revoked before execution")
+                return {"error": "JARVIS locked before action execution"}
             result = self._dispatch(name, args)
             if name not in APPROVAL_REQUIRED:
                 self._audit(name, True, "executed")
