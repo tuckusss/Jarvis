@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from typing import Callable
 
 # Any tool that transmits information or modifies external state requires approval.
-APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder"}
+APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows"}
 
 TOOLS = [
     {"type": "function", "name": "system_status", "description": "Read local CPU, RAM, battery, and operating system information.",
@@ -32,6 +32,13 @@ TOOLS = [
     {"type": "function", "name": "set_reminder", "description": "Schedule a local system-tray reminder for a future ISO datetime with timezone offset, after user approval. It fires while JARVIS is running.",
      "parameters": {"type": "object", "properties": {"when": {"type": "string"}, "message": {"type": "string"}}, "required": ["when", "message"], "additionalProperties": False}},
     {"type": "function", "name": "list_reminders", "description": "List future local reminders.",
+     "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
+    {"type": "function", "name": "recall_conversation",
+     "description": "Search previous local chat messages when the user explicitly asks, after owner approval.",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+                    "required": ["query"], "additionalProperties": False}},
+    {"type": "function", "name": "lock_windows",
+     "description": "Lock this Windows user session now, after explicit approval; this tool cannot unlock Windows.",
      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
     {"type": "function", "name": "recall_notes", "description": "Find user-created notes from local memory.",
      "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False}},
@@ -83,6 +90,10 @@ class ToolExecutor:
             return f"Store this note locally?\n\n{str(args.get('note', ''))[:1200]}"
         if name == "set_reminder":
             return f"CREATE LOCAL REMINDER\nWhen: {args.get('when','')}\n{args.get('message','')}"
+        if name == "lock_windows":
+            return "Lock this Windows session now? You will need Windows Hello, a PIN or password to unlock it."
+        if name == "recall_conversation":
+            return "Search local JARVIS chat history for this phrase?\n" + str(args.get("query", ""))[:120]
         if name == "send_email":
             return (f"SEND EMAIL\nTo: {args.get('to', '')}\nSubject: {args.get('subject', '')}\n\n"
                     + str(args.get('body', ''))[:3000])
@@ -177,6 +188,15 @@ class ToolExecutor:
             return {"saved": True}
         if name == "recall_notes":
             return {"notes": self.memory.recall(a["query"])}
+        if name == "recall_conversation":
+            return {"matches": self.memory.search_messages(a["query"])}
+        if name == "lock_windows":
+            if platform.system() != "Windows":
+                raise OSError("Windows session lock only works on Windows")
+            import ctypes
+            if not ctypes.windll.user32.LockWorkStation():
+                raise OSError("Windows rejected workstation lock")
+            return {"locked": True}
         if name == "set_reminder":
             return {"reminder_id": self.memory.add_reminder(a["when"], a["message"])}
         if name == "list_reminders":

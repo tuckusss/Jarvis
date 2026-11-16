@@ -99,6 +99,24 @@ class Memory:
                 self.db.commit()
             return [{"id": i, "due_utc": d, "message": m} for i, d, m in rows]
 
+    def search_messages(self, query: str, limit: int = 8) -> list[dict]:
+        """Find chat excerpts using parameterized SQL, bounded result sizes."""
+        query = query.strip()
+        if not (2 <= len(query) <= 120):
+            raise ValueError("Memory search needs 2-120 characters")
+        escaped = (query.replace("\\", "\\\\").replace("%", "\\%")
+                   .replace("_", "\\_"))
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT role, created_at, content FROM messages "
+                "WHERE content LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT ?",
+                ("%" + escaped + "%", min(max(1, limit), 20)),
+            ).fetchall()
+            return [
+                {"role": role, "at": when, "excerpt": content[:800]}
+                for role, when, content in rows
+            ]
+
     def clear_history(self) -> None:
         with self.lock:
             self.db.execute("DELETE FROM messages")

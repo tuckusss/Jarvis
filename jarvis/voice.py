@@ -89,7 +89,7 @@ class Speaker:
                  voice="bm_george", speed=1.0):
         self.on_finished = on_finished
         self.on_error = on_error
-        self.pending: queue.Queue = queue.Queue(maxsize=2)
+        self.pending: queue.Queue = queue.Queue(maxsize=32)
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
         self._generation = 0
@@ -119,6 +119,36 @@ class Speaker:
                     break
             self.pending.put_nowait((generation, text[:2500]))
         # Interrupt previous playback, but only if a newer generation exists.
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
+
+    def enqueue(self, text: str) -> None:
+        """Append a sentence without cutting off the previous audio segment."""
+        if not text.strip() or self.stop_event.is_set():
+            return
+        with self._lock:
+            if self._generation == 0:
+                self._generation = 1
+            try:
+                self.pending.put_nowait((self._generation, text[:1200]))
+            except queue.Full:
+                # Voice backlog must not accumulate without bound.
+                if self.on_error:
+                    self.on_error("Voice playback is behind; some speech was skipped")
+
+    def interrupt(self):
+        """Stop neural audio, discard queued fragments, keep worker alive."""
+        with self._lock:
+            self._generation += 1
+            while True:
+                try:
+                    self.pending.get_nowait()
+                except queue.Empty:
+                    break
         try:
             import sounddevice as sd
             sd.stop()
@@ -198,7 +228,7 @@ class Speaker:
                     if self.on_error and self._active(generation):
                         self.on_error("Speech output unavailable: " + type(exc).__name__)
                 finally:
-                    if self.on_finished and self._active(generation):
+                    if self.on_finished and self._active(generation) and self.pending.empty():
                         self.on_finished()
         finally:
             if com_ready:

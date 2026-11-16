@@ -1,10 +1,10 @@
-# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.6.0)
+# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.6.1)
 
 **Distribution target:** One Windows 10/11 x64 setup EXE, containing the complete desktop application, Python runtime, offline speech model, CPU inference engine, and offline language model. End users need **neither Python, Ollama, PowerShell, model folders, nor an OpenAI API key**. This repository/ZIP is a **build project**, not the finished EXE; no signed Windows installer has been compiled or hardware-tested in this Linux build environment.
 
 ## Install experience for end users (once built and signed)
 
-1. Download `JARVIS-Setup-0.6.0-x64.exe`, double-click, and choose Install. The bundled installer may be **over 1 GB** because it includes Qwen model weights.
+1. Download `JARVIS-Setup-0.6.1-x64.exe`, double-click, and choose Install. The bundled installer may be **over 1 GB** because it includes Qwen model weights.
 2. Choose whether JARVIS should launch with Windows (offered as an installer task; enabled by default and can be unchecked). A desktop shortcut is optional.
 3. Open Settings to choose a British or American voice and speech speed. Neural speech is included in the installer; Windows voice remains available if necessary.
 4. On first launch, permit or decline continuous **offline wake-word microphone listening**. Say **“Jarvis”**, pause, then speak your command. The mic can be muted via the tray icon or Settings.
@@ -32,12 +32,12 @@ On window close, JARVIS remains in the system tray, including wake listening if 
 
 1. Create a private GitHub repository, upload source contents (not any API credentials, OAuth secrets, certificates, or personal database files).
 2. Use **Actions → Build, install-test and stage JARVIS Windows Setup → Run workflow**. It builds on Windows 2022 with Python 3.12 and Inno Setup; runs tests; downloads SHA256-pinned Vosk, llama.cpp Windows CPU binary and Qwen GGUF model; bundles them with PyInstaller and Inno Setup; installs the actual setup package to the runner, checks import/model payload and offline inference, and tests uninstallation. It then creates a **private DRAFT GitHub release** containing the single EXE (not an Actions artifact, which may exceed free storage quotas).
-3. Download `JARVIS-Setup-0.6.0-x64.exe` from the private **draft release** created by the successful workflow. It is still a developer candidate, not a publicly signed or hardware-certified product.
+3. Download `JARVIS-Setup-0.6.1-x64.exe` from the private **draft release** created by the successful workflow. It is still a developer candidate, not a publicly signed or hardware-certified product.
 4. Before public distribution, sign all shipped unsigned EXE/DLL/PYD and the setup/uninstaller with a **trusted code-signing certificate**, then test on Windows 10/11 with Smart App Control. A self-signed cert or unsigned build may be blocked. `JARVIS_SIGNING_PFX_BASE64` and `JARVIS_SIGNING_PASSWORD` are supported CI secrets (never commit them). Publishing is **not** complete until Windows testing and trusted signing are done.
 
 ### Build manually on a developer Windows machine
 
-Install Python 3.12 and Inno Setup 6 **on the developer/build PC only**, then double-click `BUILD_INSTALLER.bat` or invoke `packaging/build_installer.ps1`. The completed installer is created in `dist\JARVIS-Setup-0.6.0-x64.exe` if all checks pass. Inno Setup defaults to per-user installation under `%LOCALAPPDATA%\Programs\JARVIS Desktop` and supports uninstallation through Windows Installed Apps.
+Install Python 3.12 and Inno Setup 6 **on the developer/build PC only**, then double-click `BUILD_INSTALLER.bat` or invoke `packaging/build_installer.ps1`. The completed installer is created in `dist\JARVIS-Setup-0.6.1-x64.exe` if all checks pass. Inno Setup defaults to per-user installation under `%LOCALAPPDATA%\Programs\JARVIS Desktop` and supports uninstallation through Windows Installed Apps.
 
 ### Offline asset provenance (SHA-256 pinned in packaging scripts)
 
@@ -65,7 +65,17 @@ Run tests: `python -m unittest discover -s tests -v`.
 
 Official references: [Windows Smart App Control signing](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/code-signing-for-smart-app-control), [PyInstaller](https://pyinstaller.org/en/latest/), [Inno Setup](https://jrsoftware.org/).
 
-## Neural voice v0.6 improvements
+## New in v0.6.1: responsiveness and owner access
+
+- Sentence-by-sentence audio streaming for ordinary offline conversations. Tool-using requests continue through the permission and review system.
+- Stop Speaking button in the main HUD and system tray. A new spoken request can interrupt ongoing audio.
+- Measured first-speech and end-to-end answer latency on the dashboard.
+- Optional **JARVIS-only owner passphrase gate** in OWNER ACCESS (12+ characters, slow PBKDF2 hash, time-limited session, failed-attempt backoff). Every voice command requires on-screen owner confirmation until proper speaker biometrics have been independently verified. THIS IS NOT VOICE RECOGNITION AUTHENTICATION and cannot secure or unlock Windows.
+- Approved conversation history search and an explicit-consent Windows workstation lock tool. No Windows unlock functionality.
+- Windows CI package diagnostics and bundled phonemizer transitive data for the v0.6 neural voice.
+- A native Credential Provider and speaker biometrics are independent future projects; never store or auto-type Windows credentials to implement voice unlock.
+
+## Neural voice v0.6.1 improvements
 
 - New prebundled Kokoro v1.0 INT8 offline neural voice and selectable British male/female voices.
 - Persistent speech worker renders one natural-language sentence at a time; formatting and URLs are removed before speaking.
@@ -77,6 +87,6 @@ Official references: [Windows Smart App Control signing](https://learn.microsoft
 
 ## Explicit release boundary (2026-11-14)
 
-The v0.5 Windows setup successfully passed GitHub CI, but user feedback identified slow responses and poor voice quality. v0.6 is a new source revision requiring a fresh successful Windows CI build and physical audio testing. This release pipeline now **fails closed** unless it can compile, bundle, install, run offline inference, and uninstall on the Windows runner. A successful Windows CI run is not sufficient proof of microphone quality, Smart App Control acceptance, or general hardware reliability.
+The v0.5 Windows setup successfully passed GitHub CI, but user feedback identified slow responses and poor voice quality. v0.6.1 is a new source revision requiring a fresh successful Windows CI build and physical audio testing. This release pipeline now **fails closed** unless it can compile, bundle, install, run offline inference, and uninstall on the Windows runner. A successful Windows CI run is not sufficient proof of microphone quality, Smart App Control acceptance, or general hardware reliability.
 
 Do not distribute an unsigned draft candidate to the public. Smart App Control can block unsigned applications; publishing a generally trusted installer requires a real publisher signing identity and valid signatures. Code signing is separate from building the EXE.
