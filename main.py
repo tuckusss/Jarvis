@@ -75,7 +75,28 @@ def offline_voice_check() -> int:
     return 0
 
 
+def gui_smoke_check() -> int:
+    """Check that the actual bundled Settings dialog opens without a display."""
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    from jarvis.config import Config
+    from jarvis.ui import SettingsDialog
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(Config())
+    if dialog.layout() is None:
+        raise RuntimeError("JARVIS Settings failed to initialise")
+    dialog.close()
+    return 0
+
+
 if __name__ == "__main__":
+    if "--gui-smoke-check" in sys.argv:
+        try:
+            sys.exit(gui_smoke_check())
+        except Exception:
+            _write_failure("gui")
+            sys.exit(1)
     if "--package-check" in sys.argv:
         try:
             sys.exit(package_check())
