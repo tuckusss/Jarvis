@@ -30,6 +30,11 @@ class SpeechEndpoint:
     def observe(self, rms: float) -> tuple[bool, bool]:
         """Return (speech_started, speech_finished) for one audio frame."""
         value = max(0.0, float(rms))
+        # First 0.5 s estimates ambient microphone gain. The recorder retains
+        # this window as pre-roll so the start of speech is not discarded.
+        if len(self.calibration) < 5:
+            self.calibration.append(value)
+            return False, False
         threshold = self.threshold
         if not self.started:
             if value >= threshold:
