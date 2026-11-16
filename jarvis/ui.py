@@ -361,6 +361,7 @@ class JarvisWindow(QMainWindow):
         self.agent = Agent(self.config, self.memory, executor)
         self._build_ui()
         self._make_tray()
+        self._sync_owner_visibility()
         self.stats_timer = QTimer(self)
         self.stats_timer.timeout.connect(self._refresh_stats)
         self.stats_timer.start(3500)
@@ -521,16 +522,9 @@ class JarvisWindow(QMainWindow):
         text = text.strip()
         if self._busy or not text:
             return
-        if self.owner_gate.enrolled and not self.owner_gate.authorised(voice_command=from_voice):
-            label = ("Voice commands require owner confirmation on this Windows session."
-                     if from_voice else "Enter your owner passphrase to access JARVIS.")
-            phrase, ok = QInputDialog.getText(
-                self, "JARVIS / OWNER VERIFICATION", label, QLineEdit.Password
-            )
-            if not ok or not self.owner_gate.unlock(phrase, voice_command=from_voice):
-                self._notice("Owner authorisation denied. No command was executed.")
-                self._set_busy(False)
-                return
+        if not self._authorise_owner("issue a JARVIS command", voice_command=from_voice):
+            self._set_busy(False)
+            return
         if self.wake_listener:
             self.wake_listener.stop()
         self.entry.clear()
@@ -676,6 +670,29 @@ class JarvisWindow(QMainWindow):
         if not self._busy and self.config.wake_enabled:
             self._start_wake()
 
+    def _sync_owner_visibility(self):
+        """Prevent casual disclosure of chat while JARVIS owner gate is locked."""
+        if hasattr(self, "conversation"):
+            self.conversation.setVisible(self.owner_gate.authorised())
+
+    def _authorise_owner(self, action: str, *, voice_command: bool = False) -> bool:
+        if self.owner_gate.authorised(voice_command=voice_command):
+            return True
+        message = (
+            "Voice identification is not yet installed. Enter your owner "
+            "passphrase to " + action + "."
+            if voice_command else "Enter your JARVIS owner passphrase to " + action + "."
+        )
+        phrase, ok = QInputDialog.getText(
+            self, "JARVIS / OWNER VERIFICATION", message, QLineEdit.Password
+        )
+        if not ok or not self.owner_gate.unlock(phrase, voice_command=voice_command):
+            self._notice("Owner authorisation denied. No private action executed.")
+            self._sync_owner_visibility()
+            return False
+        self._sync_owner_visibility()
+        return True
+
     def manage_owner_access(self):
         """Opt-in owner passphrase gate; NOT voice biometrics or Windows sign-in."""
         if not self.owner_gate.enrolled:
@@ -705,6 +722,7 @@ class JarvisWindow(QMainWindow):
                 return
             try:
                 self.owner_gate.enrol(phrase)
+                self._sync_owner_visibility()
                 self._notice("Owner gate enabled. JARVIS commands now require confirmation.")
             except (ValueError, PermissionError, OSError) as exc:
                 self._notice("Owner gate setup failed: " + str(exc))
@@ -724,16 +742,21 @@ class JarvisWindow(QMainWindow):
         )
         if result == QMessageBox.Yes:
             self.owner_gate.disable()
+            self._sync_owner_visibility()
             self._notice("JARVIS owner gate disabled.")
         else:
+            self._sync_owner_visibility()
             self._notice("JARVIS owner gate unlocked for five minutes.")
 
     def lock_owner_access(self):
         self.owner_gate.lock()
+        self._sync_owner_visibility()
         self.stop_speaking()
         self._notice("JARVIS owner access locked.")
 
     def settings(self):
+        if not self._authorise_owner("change JARVIS settings"):
+            return
         dlg = SettingsDialog(self.config, self)
         if dlg.exec() == QDialog.Accepted:
             self.agent.client = None  # update API key and model
@@ -747,11 +770,15 @@ class JarvisWindow(QMainWindow):
 
     def toggle_voice(self, update_only=False):
         if not update_only:
+            if not self._authorise_owner("change spoken output"):
+                return
             self.config.voice_enabled = not self.config.voice_enabled
             self.config.save()
         self.voice_button.setText("VOICE  ON" if self.config.voice_enabled else "VOICE  OFF")
 
     def clear_history(self):
+        if not self._authorise_owner("clear your conversation history"):
+            return
         if QMessageBox.question(self, "Clear local history", "Delete all local conversation history? Notes are retained.",
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
             self.memory.clear_history()
@@ -760,6 +787,8 @@ class JarvisWindow(QMainWindow):
 
     def connect_google(self):
         if self._busy:
+            return
+        if not self._authorise_owner("connect a Google account"):
             return
         if not self.config.google_credentials_path:
             self._notice("Add your Google OAuth Desktop credentials file in Settings first")
@@ -817,6 +846,9 @@ class JarvisWindow(QMainWindow):
             self.tray.showMessage("JARVIS", text[:160], QSystemTrayIcon.Information, 4000)
 
     def _poll_reminders(self):
+        if self.owner_gate.enrolled and not self.owner_gate.authorised():
+            # Preserve pending reminders until private access is unlocked.
+            return
         try:
             for item in self.memory.due_reminders():
                 message = item["message"]
@@ -829,6 +861,7 @@ class JarvisWindow(QMainWindow):
             self._append("SYSTEM", "Reminder check failed: " + str(exc))
 
     def _refresh_stats(self):
+        self._sync_owner_visibility()
         try:
             import psutil
             self.cpu.setText(f"CPU   {psutil.cpu_percent():.0f} %")
@@ -875,6 +908,8 @@ class JarvisWindow(QMainWindow):
             )
 
     def _toggle_wake_microphone(self):
+        if not self._authorise_owner("change microphone listening"):
+            return
         self.config.wake_enabled = not self.config.wake_enabled
         self.config.save()
         self._sync_mic_action()
