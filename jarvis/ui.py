@@ -171,6 +171,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("JARVIS / CONFIGURATION")
         self.setMinimumWidth(560)
+        self.resize(610, 700)
         self.cfg = cfg
         self.setStyleSheet(QSS)
         lay = QVBoxLayout(self)
@@ -262,7 +263,16 @@ class SettingsDialog(QDialog):
         form.addRow("Google write access", self.write)
         form.addRow("HTTPS bookmarks (JSON)", self.sites)
         form.addRow("Local project folders (JSON)", self.projects)
-        lay.addLayout(form)
+        # Many security, audio and gaming controls must remain usable on
+        # standard 768p laptop displays. Keep Save/Cancel below a scroll area.
+        scroller = QScrollArea(self)
+        scroller.setWidgetResizable(True)
+        scroller.setMinimumHeight(360)
+        scroller.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        content.setLayout(form)
+        scroller.setWidget(content)
+        lay.addWidget(scroller, 1)
         api_actions = QHBoxLayout()
         open_keys = QPushButton("CREATE / FIND API KEY")
         open_keys.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://platform.openai.com/api-keys")))
