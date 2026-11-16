@@ -43,3 +43,47 @@ class ProjectWorkspaceTests(TestCase):
             cfg = SimpleNamespace(project_folders={"PayCore": dirname})
             with self.assertRaises(FileNotFoundError):
                 read_project_status(cfg, "PayCore")
+
+
+class ProjectToolApprovalTests(TestCase):
+    def test_local_status_requires_explicit_approval(self):
+        from jarvis.config import Config
+        from jarvis.memory import Memory
+        from jarvis.tools import ToolExecutor
+        from unittest.mock import MagicMock
+
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "JARVIS_STATUS.md").write_text("Test safe status", encoding="utf-8")
+            cfg = Config()
+            cfg.project_folders = {"PayCore": str(root)}
+            memory = Memory(root / "local.db")
+            try:
+                denied = ToolExecutor(cfg, memory, MagicMock(), lambda *_: False,
+                                      lambda: "not used")
+                self.assertIn("denied", denied.execute(
+                    "read_project_status", {"name": "PayCore"})["error"])
+                accepted = ToolExecutor(cfg, memory, MagicMock(), lambda *_: True,
+                                        lambda: "not used")
+                result = accepted.execute("read_project_status", {"name": "PayCore"})
+                self.assertEqual(result["content"], "Test safe status")
+                self.assertFalse(result["live"])
+            finally:
+                memory.close()
+
+    def test_only_opted_in_project_can_be_read(self):
+        from jarvis.config import Config
+        from jarvis.memory import Memory
+        from jarvis.tools import ToolExecutor
+        from unittest.mock import MagicMock
+
+        with TemporaryDirectory() as folder:
+            cfg = Config()
+            cfg.project_folders = {}
+            memory = Memory(Path(folder) / "test.db")
+            try:
+                tool = ToolExecutor(cfg, memory, MagicMock(), lambda *_: True, lambda: "")
+                self.assertIn("Unknown project", tool.execute(
+                    "read_project_status", {"name": "PayCore"})["error"])
+            finally:
+                memory.close()
