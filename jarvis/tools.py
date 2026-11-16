@@ -13,6 +13,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 from typing import Callable
 from .project_workspace import project_root, read_project_status
+from .request_control import should_cancel
 
 # Any tool that transmits information or modifies external state requires approval.
 APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows", "read_project_status"}
@@ -85,6 +86,7 @@ class ToolExecutor:
         self.config, self.memory, self.google = config, memory, google
         self.owner_gate = owner_gate
         self._request_token = contextvars.ContextVar("jarvis_owner_request", default=None)
+        self._request_cancel = contextvars.ContextVar("jarvis_cancel", default=None)
         self.approve, self.screen_vision = approve, screen_vision
         self.audit_path = memory.path.parent / "audit.jsonl"
 
@@ -120,17 +122,20 @@ class ToolExecutor:
         return f"Allow {name}?"
 
     @contextmanager
-    def authorised_request(self, token: str | None):
+    def authorised_request(self, token: str | None, cancel_event=None):
         """Bind an owner capability to this worker's current execution context."""
         reset = self._request_token.set(token)
+        cancel_reset = self._request_cancel.set(cancel_event)
         try:
             yield
         finally:
+            self._request_cancel.reset(cancel_reset)
             self._request_token.reset(reset)
 
     def _owner_allowed(self) -> bool:
         gate = self.owner_gate
-        return gate is None or gate.check_command_token(self._request_token.get())
+        return (not should_cancel(self._request_cancel.get()) and
+                (gate is None or gate.check_command_token(self._request_token.get())))
 
     def execute(self, name: str, args: dict):
         # Auth is checked in the executor, not just at the GUI or wake-word.
@@ -152,7 +157,7 @@ class ToolExecutor:
             # Lock or expiry may occur WHILE the confirmation dialog is open.
             # A prior allow decision must not survive capability revocation.
             if not self._owner_allowed():
-                self._audit(name, False, "owner access revoked before execution")
+                self._audit(name, False, "request cancelled or access revoked before execution")
                 return {"error": "JARVIS locked before action execution"}
             result = self._dispatch(name, args)
             if name not in APPROVAL_REQUIRED:
