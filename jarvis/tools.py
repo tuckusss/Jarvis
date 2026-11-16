@@ -1,6 +1,8 @@
 """Allowlisted PC tools. All side effects are gated through a human confirmation callback."""
 from __future__ import annotations
 import json
+import contextvars
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import platform
@@ -69,8 +71,11 @@ def roots_for(config) -> list[Path]:
 
 
 class ToolExecutor:
-    def __init__(self, config, memory, google, approve: Callable[[str, str], bool], screen_vision):
+    def __init__(self, config, memory, google, approve: Callable[[str, str], bool],
+                 screen_vision, owner_gate=None):
         self.config, self.memory, self.google = config, memory, google
+        self.owner_gate = owner_gate
+        self._request_token = contextvars.ContextVar("jarvis_owner_request", default=None)
         self.approve, self.screen_vision = approve, screen_vision
         self.audit_path = memory.path.parent / "audit.jsonl"
 
@@ -101,7 +106,26 @@ class ToolExecutor:
             return f"CREATE CALENDAR EVENT\n{args.get('summary','')}\nStart: {args.get('start','')}\nEnd: {args.get('end','')}\n{args.get('description','')}"
         return f"Allow {name}?"
 
+    @contextmanager
+    def authorised_request(self, token: str | None):
+        """Bind an owner capability to this worker's current execution context."""
+        reset = self._request_token.set(token)
+        try:
+            yield
+        finally:
+            self._request_token.reset(reset)
+
+    def _owner_allowed(self) -> bool:
+        gate = self.owner_gate
+        return gate is None or gate.check_command_token(self._request_token.get())
+
     def execute(self, name: str, args: dict):
+        # Auth is checked in the executor, not just at the GUI or wake-word.
+        # Unknown speakers and local API callers cannot use protected tools
+        # by skipping the chat entrypoint.
+        if not self._owner_allowed():
+            self._audit(name, False, "owner capability absent")
+            return {"error": "JARVIS is locked; owner verification required"}
         if name not in {t["name"] for t in TOOLS}:
             return {"error": "Unknown tool"}
         if not isinstance(args, dict):
