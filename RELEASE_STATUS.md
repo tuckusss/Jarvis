@@ -1,12 +1,16 @@
-# JARVIS v0.6.0 — voice improvement development candidate
+# JARVIS v0.6.1 engineering branch — release validation
 
-Prior build #2 of JARVIS v0.5 compiled and passed unattended Windows installation, local AI response, and uninstallation tests. Real user testing then identified choppy synthetic voice quality and slow response latency.
+Last successful developer Windows installer: v0.5, GitHub Actions build #2.
+v0.6 CI build #3 failed during packaged import-check.
+Follow-up CI build #4 captured the precise error:
+FileNotFoundError language_tags/data/json/index.json, a transitive phonemizer/Kokoro dependency.
 
-v0.6 changes on the voice-latency branch:
-- Bundled, SHA256-pinned offline Kokoro neural TTS with British George voice by default (MIT engine, Apache-2.0 model).
-- Selectable voice and speed in Settings, with Windows speech fallback.
-- Shorter conversational LLM completions, lighter prompts when tools are unnecessary, background local model prewarm.
-- Quicker microphone end-of-speech detection and lower priority local LLM process to reserve audio CPU headroom.
-- New Windows CI check to synthesize British offline speech from the packaged model without audio output hardware.
+v0.6.1 changes:
+- Bundle language_tags, segments, csvw and clldutils data needed by Kokoro.
+- Diagnostic traceback capture for packaged Windows checks.
+- Stream complete sentences from local AI to Kokoro TTS; add Stop Speaking and answer latency telemetry.
+- Optional owner passphrase authentication for JARVIS actions. Voice-command owner confirmation is required every time when enabled. This is NOT biometric identification or Windows unlock.
+- Local searchable chat excerpts behind approval and a guarded workstation LOCK operation.
+- New unit tests for streaming and owner authorization. Native Windows audio/hardware and anti-spoofing tests are still required.
 
-This candidate is NOT verified or published until Windows CI passes on main. Unattended CI does not prove subjective voice quality. A listening test on the user's Windows laptop is essential. The new installer may still be unsigned and blocked by Smart App Control; obtain a trusted code-signing certificate before distributing.
+The main branch must not be described as ready until GitHub Actions finishes build, package check, install, offline inference, voice synthesis and uninstall tests. Draft installer is unsigned unless a valid publisher signing credential is configured.
