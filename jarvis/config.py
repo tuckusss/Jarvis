@@ -34,6 +34,7 @@ class Config:
     gaming_mode_enabled: bool = True
     gaming_pause_wake: bool = True
     gaming_mute_speech: bool = True
+    microphone_device: int | None = None
     wake_model_path: str = ""  # legacy compatibility; normally auto-discovered
     save_history: bool = True
     google_credentials_path: str = ""
