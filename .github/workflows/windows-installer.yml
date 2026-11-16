@@ -3,7 +3,7 @@ name: Build, install-test and stage JARVIS Windows Setup
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, jarvis-v061-build]
 
 # Draft releases are deliberately not public distribution. A human must complete
 # microphone, Smart App Control and security validation and provide trusted signing.
