@@ -9,7 +9,7 @@ class SpeechEndpointTests(TestCase):
             self.assertFalse(detector.observe(35)[0])
         self.assertFalse(detector.observe(270)[0])
         self.assertTrue(detector.observe(320)[0])
-        for _ in range(5):
+        for _ in range(detector.quiet_frames - 1):
             self.assertFalse(detector.observe(10)[1])
         self.assertTrue(detector.observe(10)[1])
 
