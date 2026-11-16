@@ -32,6 +32,7 @@ class Config:
     voice_speed: float = 1.0
     wake_enabled: bool = False
     gaming_mode_enabled: bool = True
+    crash_restart_enabled: bool = True
     gaming_pause_wake: bool = True
     gaming_mute_speech: bool = True
     microphone_device: int | None = None
