@@ -21,6 +21,7 @@ from .config import data_dir
 KDF_ITERATIONS = 390_000
 MIN_LENGTH = 12
 SESSION_SECONDS = 300
+COMMAND_TOKEN_SECONDS = 180
 
 
 class OwnerGate:
@@ -31,6 +32,8 @@ class OwnerGate:
         self._unlocked_until = 0.0
         self._failures = 0
         self._blocked_until = 0.0
+        self._voice_grant = False
+        self._command_tokens: dict[str, float] = {}
 
     @property
     def enrolled(self) -> bool:
@@ -74,6 +77,8 @@ class OwnerGate:
                 if os.path.exists(name):
                     os.unlink(name)
             self._unlocked_until = 0
+            self._voice_grant = False
+            self._command_tokens.clear()
 
     def unlock(self, passphrase: str, *, voice_command: bool = False) -> bool:
         """Every voice command asks again; typed commands use a short session."""
@@ -101,6 +106,7 @@ class OwnerGate:
             self._failures = 0
             self._blocked_until = 0
             self._unlocked_until = 0 if voice_command else self._clock() + SESSION_SECONDS
+            self._voice_grant = bool(voice_command)
             return True
 
     def authorised(self, *, voice_command: bool = False) -> bool:
@@ -108,9 +114,45 @@ class OwnerGate:
             return (not self.enrolled or
                     (not voice_command and self._clock() < self._unlocked_until))
 
+    def issue_command_token(self, *, voice_command: bool = False) -> str | None:
+        """Single in-process capability created only after owner verification.
+
+        It is scoped to one request and expires automatically, even if an AI
+        worker is stalled. A voice passphrase grants exactly one request.
+        """
+        with self._lock:
+            if not self.enrolled:
+                return ""
+            allowed = self._voice_grant if voice_command else self.authorised()
+            if not allowed:
+                return None
+            if voice_command:
+                self._voice_grant = False
+            now = self._clock()
+            self._command_tokens = {
+                token: expiry for token, expiry in self._command_tokens.items()
+                if expiry > now
+            }
+            token = secrets.token_urlsafe(32)
+            self._command_tokens[token] = now + COMMAND_TOKEN_SECONDS
+            return token
+
+    def check_command_token(self, token: str | None) -> bool:
+        with self._lock:
+            if not self.enrolled:
+                return True
+            return bool(token and self._command_tokens.get(token, 0) > self._clock())
+
+    def revoke_command_token(self, token: str | None) -> None:
+        with self._lock:
+            if token:
+                self._command_tokens.pop(token, None)
+
     def lock(self) -> None:
         with self._lock:
             self._unlocked_until = 0.0
+            self._voice_grant = False
+            self._command_tokens.clear()
 
     def disable(self) -> None:
         with self._lock:
