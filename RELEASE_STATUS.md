@@ -1,32 +1,34 @@
-# JARVIS v0.7.0 — engineering release candidate
+# JARVIS v0.8.0 — development candidate (not a final release)
 
-Base: v0.6.1, successful Windows GitHub Actions build #8.
-Development branch: jarvis-v070-core. Draft pull request #5.
-Automated fast Windows tests: 68 passed on Build #9. Full installer results
-must be verified separately before declaring v0.7 ready.
+Source base: successful v0.7 Windows Build #16, branch jarvis-v070-core.
+Current source branch: jarvis-v080-conversation-recovery.
+Do not merge into main or publish as a trusted installer without CI + real
+Windows desktop and audio checks.
 
-Implemented:
-- Short-lived per-command owner capabilities enforced in ToolExecutor, including
-  independent worker isolation and revocation on lock or task completion.
-- Automatically detected CK3 / Mount & Blade: Warband gaming focus with optional
-  wake microphone and speech pause; two-thread limit when local CPU model starts
-  while game is already running.
-- Microphone device selection and user-initiated half-second RMS test.
-- Explicit streamed speech sessions to avoid premature wake listening.
-- Permissioned, read-only local JARVIS_STATUS.md from configured project folders;
-  default PayCore Desktop folder only, not live remote business data.
-- Manual, official stable GitHub release discovery without self-update.
-- New tests for permission boundaries, gaming, audio input, project workspace and
-  release selection.
+Changes:
+1. Cooperative cancellation and dedicated Cancel Request HUD/tray controls.
+   The UI keeps its background worker busy until it exits; cancellation
+   revokes action capabilities and prevents subsequent tool dispatch.
+2. Streamed local and cloud responses recheck cancellation before any tool;
+   hybrid mode never falls back to cloud for a cancelled offline task.
+3. Offline speech capture uses local adaptive energy-based endpointing,
+   0.5-second ambient calibration and short pre-roll, with cancellable
+   microphone reads. No new voice model or upload added.
+4. Optional Windows Error Reporting application restart registration. This
+   is NOT a crash-resilient independent background service.
+5. Non-blocking local AI process-state and restart-count display in HUD.
+6. Regression tests cover streaming cancellation, approval races, ambient
+   audio calibration, process status and OS restart registration.
 
-Not implemented or not yet validated:
-- Real speaker identification, anti-replay/AI voice clone resistance and genuine
-  Windows lock-screen sign-in. Current owner gate is a passphrase, not biometrics.
-- Separate background service and GPU inference.
-- Windows acoustic/mic, UI, sleep-resume and gaming tests on the owner's laptop.
-- Code signing and Smart App Control acceptance. The developer EXE is unsigned
-  unless configured with an actual publisher certificate.
-- Real PayCore/Freedom Homes connected reports, sales, automation and controls.
+Not implemented at v0.8:
+- True full-duplex speaking-over-the-assistant with acoustic echo cancellation.
+- Enrolled voice biometrics, replay/liveness defense or Windows unlock.
+- A separate resilient background service, GPU acceleration and autonomous
+  multi-app workflow execution.
+- Encrypted searchable document memory, signed rollback updates or connected
+  PayCore/Freedom Homes backend operations.
 
-Do not publish draft release to end users or change Windows sign-in until the
-distinct tests, signed distribution and recovery procedures are complete.
+Security: The JARVIS owner passphrase gate is not an OS authentication
+factor. Do not store Windows credentials or auto-type them after speech.
+Windows Hello/PIN must remain available. A completed external action cannot
+be reversed by pressing Cancel.

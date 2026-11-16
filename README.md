@@ -1,4 +1,4 @@
-# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.7.0)
+# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.8.0)
 
 **Distribution target:** One Windows 10/11 x64 setup EXE, containing the complete desktop application, Python runtime, offline speech model, CPU inference engine, and offline language model. End users need **neither Python, Ollama, PowerShell, model folders, nor an OpenAI API key**. This repository/ZIP is a **build project**, not the finished EXE; no signed Windows installer has been compiled or hardware-tested in this Linux build environment.
 
@@ -139,3 +139,46 @@ anti-spoof testing; native Windows Credential Provider for a voice-assisted
 OS sign-in with a strong second factor; robust GPU acceleration; a separate
 crash-resilient background agent; live PayCore/Freedom Homes integrations and
 trusted signed automatic updates. These are separate security and release gates.
+
+
+## v0.8.0 — interruptible conversations and recoverability (development candidate)
+
+This version must pass fresh Windows CI before its installer can be treated as a
+successful draft build. It remains unsigned unless configured with a trusted
+publisher certificate. The Windows secure lock screen is unchanged.
+
+- **Cancel Request** in the HUD/tray cooperatively interrupts offline token
+  streaming, microphone recording, subsequent model requests, and pending
+  actions. The tool executor rechecks cancellation *after* action approval.
+  Completed external actions cannot be undone. Long network calls may need
+  to finish or time out before their background worker can exit.
+- **Adaptive audio capture** uses a local ambient-volume calibration, 100ms
+  frames and pre-roll to find utterance onset/end; unlike neural VAD, this
+  energy-based method is not robust to every noise source, and is not
+  speaker authentication. The first 0.5 seconds calibrate the microphone.
+- **Windows Error Reporting restart** can be enabled or disabled in Settings.
+  It registers application restart after eligible unhandled failures, but
+  is not a background Windows service, does not guarantee recovery, and
+  does not automatically recover from every power loss or session exit.
+- **Local AI diagnostics** report whether the private loopback llama.cpp
+  process is currently running, exited or not yet started. JARVIS already
+  restarts a failed inference subprocess on a subsequent request; v0.8 adds
+  visibility into that lifecycle. No additional cloud telemetry is sent.
+- Cloud and hybrid modes remain strictly opt-in. Cancelling a local request
+  does not silently retry it with a cloud provider.
+
+### Required physical checks
+
+Test actual Windows 10/11 microphone capture, headset unplug/reconnect,
+background noise, false stops, voice overlap/echo, interruption while
+approval dialogs are open, sleep/resume, crash recovery and Smart App Control
+on the intended laptop. The CI voice test does **not** use a physical speaker
+or microphone. No voice-biometrics or Windows voice unlock exists.
+
+Architecture research references:
+- Windows Error Reporting restart:
+  https://learn.microsoft.com/en-us/windows/win32/recovery/registering-for-an-application-restart
+- Windows application recovery:
+  https://learn.microsoft.com/en-us/windows/win32/recovery/using-application-recovery-and-restart
+- llama.cpp server lifecycle:
+  https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
