@@ -25,6 +25,7 @@ from .memory import Memory
 from .owner_auth import OwnerGate
 from .gaming import GamingState, installed_game_running
 from .audio_devices import input_devices, microphone_probe
+from .updates import check_official_release
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
 from .neural_voice import VOICE_CHOICES, neural_available
@@ -270,6 +271,9 @@ class SettingsDialog(QDialog):
         self.test_key_button.clicked.connect(self._test_api_key)
         api_actions.addWidget(self.test_key_button)
         lay.addLayout(api_actions)
+        self.check_updates_button = QPushButton("CHECK OFFICIAL JARVIS RELEASES")
+        self.check_updates_button.clicked.connect(self._check_updates)
+        lay.addWidget(self.check_updates_button)
         choose = QPushButton("Browse Google credentials…")
         choose.clicked.connect(self._pick_google)
         lay.addWidget(choose)
@@ -277,6 +281,43 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.apply)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+
+    def _check_updates(self):
+        self.check_updates_button.setEnabled(False)
+        self.check_updates_button.setText("CHECKING OFFICIAL RELEASES…")
+        self._update_task = Task(lambda: check_official_release("0.7.0"))
+        self._update_task.signals.done.connect(self._update_result)
+        self._update_task.signals.failed.connect(self._update_error)
+        QThreadPool.globalInstance().start(self._update_task)
+
+    def _update_result(self, result):
+        self.check_updates_button.setEnabled(True)
+        self.check_updates_button.setText("CHECK OFFICIAL JARVIS RELEASES")
+        if result.get("update") and result.get("url"):
+            yes = QMessageBox.question(
+                self, "Official JARVIS release",
+                "A newer stable release " + result["version"] +
+                " is available. Open the official GitHub release page?\n\n"
+                "JARVIS will not download or install an unverified program.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if yes == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl(result["url"]))
+        else:
+            QMessageBox.information(
+                self, "JARVIS updates",
+                "No newer stable public release is available. Development "
+                "drafts are excluded from this check."
+            )
+
+    def _update_error(self, _error):
+        self.check_updates_button.setEnabled(True)
+        self.check_updates_button.setText("CHECK OFFICIAL JARVIS RELEASES")
+        QMessageBox.warning(
+            self, "Update check unavailable",
+            "Could not contact the official GitHub release endpoint. "
+            "No application changes were made."
+        )
 
     def _test_microphone(self):
         """Half-second local volume check, only when the user clicks Test."""
