@@ -27,6 +27,7 @@ from .gaming import GamingState, installed_game_running
 from .audio_devices import input_devices, microphone_probe
 from .updates import check_official_release
 from .request_control import RequestCancelled, check_cancelled
+from .recovery import register_windows_restart
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
 from .neural_voice import VOICE_CHOICES, neural_available
@@ -219,6 +220,8 @@ class SettingsDialog(QDialog):
         self.microphones.setCurrentIndex(max(0, selected_mic))
         self.microphone_test = QPushButton("TEST SELECTED MICROPHONE")
         self.microphone_test.clicked.connect(self._test_microphone)
+        self.recovery_enabled = QCheckBox("Allow Windows to offer recovery after a crash")
+        self.recovery_enabled.setChecked(cfg.crash_restart_enabled)
         self.gaming_enabled = QCheckBox("Automatically detect Crusader Kings III / Warband")
         self.gaming_enabled.setChecked(cfg.gaming_mode_enabled)
         self.gaming_pause_wake = QCheckBox("Pause wake listening while gaming")
@@ -248,6 +251,7 @@ class SettingsDialog(QDialog):
         form.addRow("Wake listener", self.wake)
         form.addRow("Input microphone", self.microphones)
         form.addRow("Microphone diagnostics", self.microphone_test)
+        form.addRow("Crash recovery", self.recovery_enabled)
         form.addRow("Gaming focus", self.gaming_enabled)
         form.addRow("Gaming microphone", self.gaming_pause_wake)
         form.addRow("Gaming speech", self.gaming_mute_speech)
@@ -424,6 +428,7 @@ class SettingsDialog(QDialog):
             self.cfg.wake_enabled = self.wake.isChecked()
             self.cfg.microphone_device = self.microphones.currentData()
             self.cfg.gaming_mode_enabled = self.gaming_enabled.isChecked()
+            self.cfg.crash_restart_enabled = self.recovery_enabled.isChecked()
             self.cfg.gaming_pause_wake = self.gaming_pause_wake.isChecked()
             self.cfg.gaming_mute_speech = self.gaming_mute_speech.isChecked()
             # Vosk model path is discovered automatically from bundled files or app data.
@@ -1201,6 +1206,9 @@ def run():
                                 "Open it from the JARVIS tray icon.")
         return
     window = JarvisWindow()
+    restart = register_windows_restart(window.config.crash_restart_enabled)
+    if window.config.crash_restart_enabled and not restart.registered and sys.platform == "win32":
+        window._append("SYSTEM", "Windows crash recovery could not be registered.")
     window.show()
     try:
         sys.exit(app.exec())
