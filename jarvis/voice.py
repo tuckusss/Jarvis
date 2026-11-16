@@ -95,6 +95,9 @@ class Speaker:
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
         self._generation = 0
+        self._stream_open = False
+        self._in_playback = False
+        self._last_notified_generation = -1
         self._neural = None
         self._sapi = None
         self.configure(engine=engine, voice=voice, speed=speed)
@@ -113,6 +116,7 @@ class Speaker:
             return
         with self._lock:
             self._generation += 1
+            self._stream_open = False
             generation = self._generation
             while True:
                 try:
@@ -127,6 +131,45 @@ class Speaker:
         except Exception:
             pass
 
+
+    def begin_stream(self, text: str) -> None:
+        """Start a streamed reply; don't signal completion between sentences."""
+        if not text.strip() or self.stop_event.is_set():
+            return
+        with self._lock:
+            self._generation += 1
+            self._stream_open = True
+            while True:
+                try:
+                    self.pending.get_nowait()
+                except queue.Empty:
+                    break
+            self.pending.put_nowait((self._generation, text[:1200]))
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
+    def end_stream(self) -> None:
+        """Mark the complete answer; emit finished only when audio is drained."""
+        with self._lock:
+            generation = self._generation
+            self._stream_open = False
+        self._notify_finished(generation)
+
+    def _notify_finished(self, generation: int) -> None:
+        callback = None
+        with self._lock:
+            if (not self.stop_event.is_set()
+                    and self._generation == generation
+                    and not self._stream_open and not self._in_playback
+                    and self.pending.empty()
+                    and self._last_notified_generation != generation):
+                self._last_notified_generation = generation
+                callback = self.on_finished
+        if callback:
+            callback()
 
     def enqueue(self, text: str) -> None:
         """Append a sentence without cutting off the previous audio segment."""
@@ -146,6 +189,7 @@ class Speaker:
         """Stop neural audio, discard queued fragments, keep worker alive."""
         with self._lock:
             self._generation += 1
+            self._stream_open = False
             while True:
                 try:
                     self.pending.get_nowait()
@@ -215,6 +259,7 @@ class Speaker:
                     continue
                 with self._lock:
                     engine, voice, speed = self.engine, self.voice, self.speed
+                    self._in_playback = True
                 try:
                     if engine == "neural":
                         try:
@@ -230,8 +275,9 @@ class Speaker:
                     if self.on_error and self._active(generation):
                         self.on_error("Speech output unavailable: " + type(exc).__name__)
                 finally:
-                    if self.on_finished and self._active(generation) and self.pending.empty():
-                        self.on_finished()
+                    with self._lock:
+                        self._in_playback = False
+                    self._notify_finished(generation)
         finally:
             if com_ready:
                 try:
@@ -244,6 +290,7 @@ class Speaker:
         self.stop_event.set()
         with self._lock:
             self._generation += 1
+            self._stream_open = False
         try:
             import sounddevice as sd
             sd.stop()
