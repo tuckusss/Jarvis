@@ -598,7 +598,8 @@ class JarvisWindow(QMainWindow):
         self.google_status = muted("GOOGLE: OPTIONAL")
         self.mic_status = muted("MICROPHONE: OFF")
         self.game_status = muted("GAMING: NORMAL")
-        for widget in (self.api_status, self.google_status, self.mic_status, self.game_status):
+        self.local_health = muted("LOCAL AI: NOT STARTED")
+        for widget in (self.api_status, self.google_status, self.mic_status, self.game_status, self.local_health):
             right_l.addWidget(widget)
         right_l.addStretch()
         connect = QPushButton("CONNECT GOOGLE")
@@ -1104,6 +1105,9 @@ class JarvisWindow(QMainWindow):
 
     def _refresh_stats(self):
         self._sync_owner_visibility()
+        health = self.agent.local_runtime.status_snapshot()
+        self.local_health.setText("LOCAL AI: " + health["state"].upper() +
+                                  " · LOADS " + str(health["launches"]))
         try:
             import psutil
             self.cpu.setText(f"CPU   {psutil.cpu_percent():.0f} %")
