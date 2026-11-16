@@ -357,7 +357,9 @@ class JarvisWindow(QMainWindow):
         self._first_audio_latency = 0.0
         self.agent = None
         executor = ToolExecutor(self.config, self.memory, self.google, self._approve,
-                                lambda: self.agent.describe_screen())
+                                lambda: self.agent.describe_screen(),
+                                owner_gate=self.owner_gate)
+        self.executor = executor
         self.agent = Agent(self.config, self.memory, executor)
         self._build_ui()
         self._make_tray()
@@ -525,6 +527,11 @@ class JarvisWindow(QMainWindow):
         if not self._authorise_owner("issue a JARVIS command", voice_command=from_voice):
             self._set_busy(False)
             return
+        capability = self.owner_gate.issue_command_token(voice_command=from_voice)
+        if capability is None:
+            self._notice("Command denied: owner capability missing.")
+            self._set_busy(False)
+            return
         if self.wake_listener:
             self.wake_listener.stop()
         self.entry.clear()
@@ -535,9 +542,20 @@ class JarvisWindow(QMainWindow):
         self._speech_muted = False
         self._set_busy(True, "REASONING / PROCESSING REQUEST")
         self._run_task(
-            lambda: self.agent.ask_stream(text, lambda chunk: self.bridge.speech_sentence.emit(chunk)),
+            lambda: self._execute_owner_request(text, capability),
             self._answer, self._fail_answer,
         )
+
+    def _execute_owner_request(self, text: str, capability: str | None):
+        # Thread-local capability is valid only inside this task, not globally
+        # and not for requests started by other applications or speakers.
+        try:
+            with self.executor.authorised_request(capability):
+                return self.agent.ask_stream(
+                    text, lambda chunk: self.bridge.speech_sentence.emit(chunk)
+                )
+        finally:
+            self.owner_gate.revoke_command_token(capability)
 
     def _say(self, text: str):
         if not self.config.voice_enabled or not text.strip():
