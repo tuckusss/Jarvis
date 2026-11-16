@@ -31,6 +31,9 @@ class Config:
     voice_name: str = "bm_george"
     voice_speed: float = 1.0
     wake_enabled: bool = False
+    gaming_mode_enabled: bool = True
+    gaming_pause_wake: bool = True
+    gaming_mute_speech: bool = True
     wake_model_path: str = ""  # legacy compatibility; normally auto-discovered
     save_history: bool = True
     google_credentials_path: str = ""
