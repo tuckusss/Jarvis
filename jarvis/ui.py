@@ -23,6 +23,7 @@ from .config import Config, api_key, save_api_key, data_dir
 from .google_connector import GoogleConnector
 from .memory import Memory
 from .owner_auth import OwnerGate
+from .gaming import GamingState, installed_game_running
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
 from .neural_voice import VOICE_CHOICES, neural_available
@@ -206,6 +207,12 @@ class SettingsDialog(QDialog):
         self.history.setChecked(cfg.save_history)
         self.wake = QCheckBox("Enable offline 'Jarvis' wake word (no model folder needed)")
         self.wake.setChecked(cfg.wake_enabled)
+        self.gaming_enabled = QCheckBox("Automatically detect Crusader Kings III / Warband")
+        self.gaming_enabled.setChecked(cfg.gaming_mode_enabled)
+        self.gaming_pause_wake = QCheckBox("Pause wake listening while gaming")
+        self.gaming_pause_wake.setChecked(cfg.gaming_pause_wake)
+        self.gaming_mute_speech = QCheckBox("Mute spoken replies during gameplay")
+        self.gaming_mute_speech.setChecked(cfg.gaming_mute_speech)
         self.custom = QLineEdit(cfg.custom_folder)
         self.custom.setPlaceholderText("Optional extra folder to search; blank = none")
         self.google = QLineEdit(cfg.google_credentials_path)
@@ -224,6 +231,9 @@ class SettingsDialog(QDialog):
         form.addRow("Speaking speed", self.voice_speed)
         form.addRow("Local memory", self.history)
         form.addRow("Wake listener", self.wake)
+        form.addRow("Gaming focus", self.gaming_enabled)
+        form.addRow("Gaming microphone", self.gaming_pause_wake)
+        form.addRow("Gaming speech", self.gaming_mute_speech)
         model_path = resolve_model(cfg.wake_model_path)
         self.model_status = QLabel("Vosk wake model: bundled / ready" if model_path else "Vosk wake model: automatically installed when enabled")
         self.model_status.setWordWrap(True)
@@ -310,6 +320,9 @@ class SettingsDialog(QDialog):
             self.cfg.voice_speed = float(self.voice_speed.currentData())
             self.cfg.save_history = self.history.isChecked()
             self.cfg.wake_enabled = self.wake.isChecked()
+            self.cfg.gaming_mode_enabled = self.gaming_enabled.isChecked()
+            self.cfg.gaming_pause_wake = self.gaming_pause_wake.isChecked()
+            self.cfg.gaming_mute_speech = self.gaming_mute_speech.isChecked()
             # Vosk model path is discovered automatically from bundled files or app data.
             self.cfg.wake_model_path = ""
             self.cfg.custom_folder = self.custom.text().strip()
@@ -338,6 +351,7 @@ class JarvisWindow(QMainWindow):
         self.bridge.speech_error.connect(self._notice)
         self.config = Config.load()
         self.owner_gate = OwnerGate()
+        self.game_state = GamingState(False)
         self.memory = Memory()
         self.google = GoogleConnector(self.config)
         self.speaker = Speaker(
@@ -361,9 +375,14 @@ class JarvisWindow(QMainWindow):
                                 owner_gate=self.owner_gate)
         self.executor = executor
         self.agent = Agent(self.config, self.memory, executor)
+        self.agent.local_runtime.gaming_mode_enabled = self.config.gaming_mode_enabled
         self._build_ui()
         self._make_tray()
         self._sync_owner_visibility()
+        self.game_timer = QTimer(self)
+        self.game_timer.timeout.connect(self._refresh_gaming)
+        self.game_timer.start(5000)
+        self._refresh_gaming()
         self.stats_timer = QTimer(self)
         self.stats_timer.timeout.connect(self._refresh_stats)
         self.stats_timer.start(3500)
@@ -373,7 +392,7 @@ class JarvisWindow(QMainWindow):
         self._poll_reminders()
         self._refresh_stats()
         self._start_wake()
-        if self.config.provider in ("local", "hybrid"):
+        if self.config.provider in ("local", "hybrid") and not self.game_state.active:
             QTimer.singleShot(2500, self._warm_local_brain)
         self._append("SYSTEM", "JARVIS initialised. Offline AI is the default; no OpenAI API key is required. Enable the hands-free wake listener in Settings. Closing the window keeps the tray assistant running.")
         if not (data_dir() / "onboarding_complete.flag").exists():
@@ -462,7 +481,8 @@ class JarvisWindow(QMainWindow):
         self.api_status = muted("AI: LOCAL / FREE")
         self.google_status = muted("GOOGLE: OPTIONAL")
         self.mic_status = muted("MICROPHONE: OFF")
-        for widget in (self.api_status, self.google_status, self.mic_status):
+        self.game_status = muted("GAMING: NORMAL")
+        for widget in (self.api_status, self.google_status, self.mic_status, self.game_status):
             right_l.addWidget(widget)
         right_l.addStretch()
         connect = QPushButton("CONNECT GOOGLE")
@@ -509,7 +529,8 @@ class JarvisWindow(QMainWindow):
             self._start_wake()
 
     def _warm_local_brain(self):
-        if not self._quitting and self.config.provider in ("local", "hybrid"):
+        if (not self._quitting and not self.game_state.active
+                and self.config.provider in ("local", "hybrid")):
             self._run_task(lambda: self.agent.local_runtime.client(), lambda result: None,
                            lambda error: self._append("SYSTEM", "Local AI prewarm unavailable: " + error[:130]))
 
@@ -558,7 +579,8 @@ class JarvisWindow(QMainWindow):
             self.owner_gate.revoke_command_token(capability)
 
     def _say(self, text: str):
-        if not self.config.voice_enabled or not text.strip():
+        if (not self.config.voice_enabled or not text.strip() or
+                (self.game_state.active and self.config.gaming_mute_speech)):
             return
         if self.wake_listener:
             self.wake_listener.stop()
@@ -568,7 +590,8 @@ class JarvisWindow(QMainWindow):
 
     @Slot(str)
     def _on_stream_sentence(self, sentence: str):
-        if not self.config.voice_enabled or self._speech_muted or not sentence.strip():
+        if (not self.config.voice_enabled or self._speech_muted or not sentence.strip()
+                or (self.game_state.active and self.config.gaming_mute_speech)):
             return
         if not self._first_audio_latency and self._request_started:
             self._first_audio_latency = time.monotonic() - self._request_started
@@ -781,6 +804,8 @@ class JarvisWindow(QMainWindow):
             self.toggle_voice(update_only=True)
             self.speaker.configure(engine=self.config.voice_engine,
                                    voice=self.config.voice_name, speed=self.config.voice_speed)
+            self.agent.local_runtime.gaming_mode_enabled = self.config.gaming_mode_enabled
+            self._refresh_gaming()
             self._start_wake()
             self._sync_mic_action()
             self._refresh_stats()
@@ -819,6 +844,9 @@ class JarvisWindow(QMainWindow):
             self.wake_listener.stop()
             self.wake_listener = None
         if self._busy or self._speaking or not self.config.wake_enabled:
+            return
+        if self.game_state.active and self.config.gaming_pause_wake:
+            self.mic_status.setText("MICROPHONE: PAUSED FOR GAME")
             return
         model = resolve_model(self.config.wake_model_path)
         if not model:
@@ -877,6 +905,29 @@ class JarvisWindow(QMainWindow):
                     self._say("Reminder. " + message)
         except Exception as exc:
             self._append("SYSTEM", "Reminder check failed: " + str(exc))
+
+    def _refresh_gaming(self):
+        new = (installed_game_running() if self.config.gaming_mode_enabled
+               else GamingState(False))
+        changed = new.active != self.game_state.active
+        self.game_state = new
+        if not hasattr(self, "game_status"):
+            return
+        self.game_status.setText(
+            "GAMING: " + (new.title.upper() if new.active else "NORMAL")
+        )
+        if changed and new.active:
+            if self.config.gaming_pause_wake and self.wake_listener:
+                self.wake_listener.stop()
+                self.wake_listener = None
+                self.mic_status.setText("MICROPHONE: PAUSED FOR GAME")
+            if self.config.gaming_mute_speech and self._speaking:
+                self.stop_speaking()
+            self._append("SYSTEM", "Gaming focus active: " + new.title)
+        elif changed:
+            self._append("SYSTEM", "Gaming focus ended; normal assistant restored.")
+            if not self._busy:
+                self._start_wake()
 
     def _refresh_stats(self):
         self._sync_owner_visibility()
