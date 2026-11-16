@@ -1,10 +1,10 @@
-# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.6.1)
+# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.7.0)
 
 **Distribution target:** One Windows 10/11 x64 setup EXE, containing the complete desktop application, Python runtime, offline speech model, CPU inference engine, and offline language model. End users need **neither Python, Ollama, PowerShell, model folders, nor an OpenAI API key**. This repository/ZIP is a **build project**, not the finished EXE; no signed Windows installer has been compiled or hardware-tested in this Linux build environment.
 
 ## Install experience for end users (once built and signed)
 
-1. Download `JARVIS-Setup-0.6.1-x64.exe`, double-click, and choose Install. The bundled installer may be **over 1 GB** because it includes Qwen model weights.
+1. Download `JARVIS-Setup-0.7.0-x64.exe`, double-click, and choose Install. The bundled installer may be **over 1 GB** because it includes Qwen model weights.
 2. Choose whether JARVIS should launch with Windows (offered as an installer task; enabled by default and can be unchecked). A desktop shortcut is optional.
 3. Open Settings to choose a British or American voice and speech speed. Neural speech is included in the installer; Windows voice remains available if necessary.
 4. On first launch, permit or decline continuous **offline wake-word microphone listening**. Say **“Jarvis”**, pause, then speak your command. The mic can be muted via the tray icon or Settings.
@@ -32,12 +32,12 @@ On window close, JARVIS remains in the system tray, including wake listening if 
 
 1. Create a private GitHub repository, upload source contents (not any API credentials, OAuth secrets, certificates, or personal database files).
 2. Use **Actions → Build, install-test and stage JARVIS Windows Setup → Run workflow**. It builds on Windows 2022 with Python 3.12 and Inno Setup; runs tests; downloads SHA256-pinned Vosk, llama.cpp Windows CPU binary and Qwen GGUF model; bundles them with PyInstaller and Inno Setup; installs the actual setup package to the runner, checks import/model payload and offline inference, and tests uninstallation. It then creates a **private DRAFT GitHub release** containing the single EXE (not an Actions artifact, which may exceed free storage quotas).
-3. Download `JARVIS-Setup-0.6.1-x64.exe` from the private **draft release** created by the successful workflow. It is still a developer candidate, not a publicly signed or hardware-certified product.
+3. Download `JARVIS-Setup-0.7.0-x64.exe` from the private **draft release** created by the successful workflow. It is still a developer candidate, not a publicly signed or hardware-certified product.
 4. Before public distribution, sign all shipped unsigned EXE/DLL/PYD and the setup/uninstaller with a **trusted code-signing certificate**, then test on Windows 10/11 with Smart App Control. A self-signed cert or unsigned build may be blocked. `JARVIS_SIGNING_PFX_BASE64` and `JARVIS_SIGNING_PASSWORD` are supported CI secrets (never commit them). Publishing is **not** complete until Windows testing and trusted signing are done.
 
 ### Build manually on a developer Windows machine
 
-Install Python 3.12 and Inno Setup 6 **on the developer/build PC only**, then double-click `BUILD_INSTALLER.bat` or invoke `packaging/build_installer.ps1`. The completed installer is created in `dist\JARVIS-Setup-0.6.1-x64.exe` if all checks pass. Inno Setup defaults to per-user installation under `%LOCALAPPDATA%\Programs\JARVIS Desktop` and supports uninstallation through Windows Installed Apps.
+Install Python 3.12 and Inno Setup 6 **on the developer/build PC only**, then double-click `BUILD_INSTALLER.bat` or invoke `packaging/build_installer.ps1`. The completed installer is created in `dist\JARVIS-Setup-0.7.0-x64.exe` if all checks pass. Inno Setup defaults to per-user installation under `%LOCALAPPDATA%\Programs\JARVIS Desktop` and supports uninstallation through Windows Installed Apps.
 
 ### Offline asset provenance (SHA-256 pinned in packaging scripts)
 
@@ -90,3 +90,52 @@ Official references: [Windows Smart App Control signing](https://learn.microsoft
 The v0.5 Windows setup successfully passed GitHub CI, but user feedback identified slow responses and poor voice quality. v0.6.1 is a new source revision requiring a fresh successful Windows CI build and physical audio testing. This release pipeline now **fails closed** unless it can compile, bundle, install, run offline inference, and uninstall on the Windows runner. A successful Windows CI run is not sufficient proof of microphone quality, Smart App Control acceptance, or general hardware reliability.
 
 Do not distribute an unsigned draft candidate to the public. Smart App Control can block unsigned applications; publishing a generally trusted installer requires a real publisher signing identity and valid signatures. Code signing is separate from building the EXE.
+
+
+## JARVIS v0.7.0 — owner-gated commands, gaming focus and microphone controls
+
+This version is a draft development candidate until GitHub's Windows install,
+offline AI and speech tests pass. A green automated build alone does not prove
+the microphone, neural voice quality or security on a real laptop.
+
+**Owner capability enforcement:** An enrolled JARVIS passphrase creates a
+random, time-limited token for one command request. The tool executor checks
+this token on every action; the token is bound to the active worker's execution
+context, not exposed as an API, and is revoked on lock and completion.
+Voice commands still require passphrase confirmation until enrolled-speaker
+verification is proven. This application gate does NOT unlock Windows, does
+not protect against code already running as the Windows user, and is not
+biometric authentication.
+
+**Gaming focus:** JARVIS detects the names of Crusader Kings III and Mount &
+Blade: Warband game processes without injecting into them. Settings can pause
+hands-free wake listening and mute speech during gameplay; the bundled CPU
+LLM starts with fewer threads when a supported game is already running.
+Existing LLM processes are not dynamically reconfigured, and GPU acceleration
+is not yet shipped.
+
+**Microphones:** Settings lists available recording inputs and lets the owner
+run a local, user-triggered microphone test. It reports volume without saving
+recordings. Listening and wake-word capture use the selected device.
+
+**Voice playback:** Streamed answers use explicit begin/end sessions to avoid
+restarting the wake listener between sentence fragments. Stop Speaking
+interrupts playback but does not cancel unrelated operations.
+
+**Project workspaces:** Configure local folders by project name. The default
+PayCore folder points to Desktop/PayCore, which is used with Arduino IDE
+(not VS Code or GitHub for PayCore firmware). A request to read project status
+reads ONLY an existing JARVIS_STATUS.md in that configured folder, never
+claims to provide live PayCore data, and always displays a human permission
+dialog. Adding Freedom Homes or another workspace requires an explicit folder
+configuration; real COHO and server integrations do not exist here.
+
+**Updates:** The Settings button checks only for newer stable releases on
+the official GitHub repository and offers to open the official page. It will
+not download, auto-run or install unsigned development executables.
+
+**Still to build:** Verified enrolled-speaker biometric embeddings with
+anti-spoof testing; native Windows Credential Provider for a voice-assisted
+OS sign-in with a strong second factor; robust GPU acceleration; a separate
+crash-resilient background agent; live PayCore/Freedom Homes integrations and
+trusted signed automatic updates. These are separate security and release gates.

@@ -1,19 +1,32 @@
-# JARVIS v0.6.1 engineering branch — release validation
+# JARVIS v0.7.0 — engineering release candidate
 
-Last successful developer Windows installer: v0.5, GitHub Actions build #2.
-v0.6 CI build #3 failed during packaged import-check.
-Follow-up CI build #4 captured the precise error:
-FileNotFoundError language_tags/data/json/index.json, a transitive phonemizer/Kokoro dependency.
+Base: v0.6.1, successful Windows GitHub Actions build #8.
+Development branch: jarvis-v070-core. Draft pull request #5.
+Automated fast Windows tests: 68 passed on Build #9. Full installer results
+must be verified separately before declaring v0.7 ready.
 
-v0.6.1 changes:
-- Bundle language_tags, segments, csvw and clldutils data needed by Kokoro.
-- Diagnostic traceback capture for packaged Windows checks.
-- Stream complete sentences from local AI to Kokoro TTS; add Stop Speaking and answer latency telemetry.
-- Optional owner passphrase authentication for JARVIS actions. Voice-command owner confirmation is required every time when enabled. This is NOT biometric identification or Windows unlock.
-- Local searchable chat excerpts behind approval and a guarded workstation LOCK operation.
-- New unit tests for streaming and owner authorization. Native Windows audio/hardware and anti-spoofing tests are still required.
+Implemented:
+- Short-lived per-command owner capabilities enforced in ToolExecutor, including
+  independent worker isolation and revocation on lock or task completion.
+- Automatically detected CK3 / Mount & Blade: Warband gaming focus with optional
+  wake microphone and speech pause; two-thread limit when local CPU model starts
+  while game is already running.
+- Microphone device selection and user-initiated half-second RMS test.
+- Explicit streamed speech sessions to avoid premature wake listening.
+- Permissioned, read-only local JARVIS_STATUS.md from configured project folders;
+  default PayCore Desktop folder only, not live remote business data.
+- Manual, official stable GitHub release discovery without self-update.
+- New tests for permission boundaries, gaming, audio input, project workspace and
+  release selection.
 
-The main branch must not be described as ready until GitHub Actions finishes build, package check, install, offline inference, voice synthesis and uninstall tests. Draft installer is unsigned unless a valid publisher signing credential is configured.
+Not implemented or not yet validated:
+- Real speaker identification, anti-replay/AI voice clone resistance and genuine
+  Windows lock-screen sign-in. Current owner gate is a passphrase, not biometrics.
+- Separate background service and GPU inference.
+- Windows acoustic/mic, UI, sleep-resume and gaming tests on the owner's laptop.
+- Code signing and Smart App Control acceptance. The developer EXE is unsigned
+  unless configured with an actual publisher certificate.
+- Real PayCore/Freedom Homes connected reports, sales, automation and controls.
 
-## Voice compatibility discovered in CI
-The packaged neural voice synthesized only after the missing phonemizer data was included; then kokoro-onnx 0.5.0 raised ONNX tensor(int32) versus tensor(float) while reading the pinned model-files-v1.1 ONNX model. Bump pinned kokoro-onnx to 0.6.1, which supports the model's speed input type. Validate real audio generation through CI before release.
+Do not publish draft release to end users or change Windows sign-in until the
+distinct tests, signed distribution and recovery procedures are complete.
