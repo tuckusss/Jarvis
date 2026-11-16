@@ -12,13 +12,15 @@ import numpy as np
 SAMPLE_RATE = 16000
 
 
-def record_phrase(max_seconds=9, stop_after_silence=0.7, start_timeout_s=4.0) -> bytes:
+def record_phrase(max_seconds=9, stop_after_silence=0.7, start_timeout_s=4.0,
+                  device: int | None = None) -> bytes:
     import sounddevice as sd
     audio = []
     started = False
     silent_chunks = 0
     blocksize = 1600  # 0.1 seconds
-    with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=blocksize, dtype="int16", channels=1) as stream:
+    with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=blocksize,
+                           dtype="int16", channels=1, device=device) as stream:
         for index in range(int(max_seconds * SAMPLE_RATE / blocksize)):
             if not started and index * blocksize / SAMPLE_RATE >= start_timeout_s:
                 break
@@ -89,10 +91,13 @@ class Speaker:
                  voice="bm_george", speed=1.0):
         self.on_finished = on_finished
         self.on_error = on_error
-        self.pending: queue.Queue = queue.Queue(maxsize=2)
+        self.pending: queue.Queue = queue.Queue(maxsize=32)
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
         self._generation = 0
+        self._stream_open = False
+        self._in_playback = False
+        self._last_notified_generation = -1
         self._neural = None
         self._sapi = None
         self.configure(engine=engine, voice=voice, speed=speed)
@@ -111,6 +116,7 @@ class Speaker:
             return
         with self._lock:
             self._generation += 1
+            self._stream_open = False
             generation = self._generation
             while True:
                 try:
@@ -119,6 +125,76 @@ class Speaker:
                     break
             self.pending.put_nowait((generation, text[:2500]))
         # Interrupt previous playback, but only if a newer generation exists.
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
+
+    def begin_stream(self, text: str) -> None:
+        """Start a streamed reply; don't signal completion between sentences."""
+        if not text.strip() or self.stop_event.is_set():
+            return
+        with self._lock:
+            self._generation += 1
+            self._stream_open = True
+            while True:
+                try:
+                    self.pending.get_nowait()
+                except queue.Empty:
+                    break
+            self.pending.put_nowait((self._generation, text[:1200]))
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
+    def end_stream(self) -> None:
+        """Mark the complete answer; emit finished only when audio is drained."""
+        with self._lock:
+            generation = self._generation
+            self._stream_open = False
+        self._notify_finished(generation)
+
+    def _notify_finished(self, generation: int) -> None:
+        callback = None
+        with self._lock:
+            if (not self.stop_event.is_set()
+                    and self._generation == generation
+                    and not self._stream_open and not self._in_playback
+                    and self.pending.empty()
+                    and self._last_notified_generation != generation):
+                self._last_notified_generation = generation
+                callback = self.on_finished
+        if callback:
+            callback()
+
+    def enqueue(self, text: str) -> None:
+        """Append a sentence without cutting off the previous audio segment."""
+        if not text.strip() or self.stop_event.is_set():
+            return
+        with self._lock:
+            if self._generation == 0:
+                self._generation = 1
+            try:
+                self.pending.put_nowait((self._generation, text[:1200]))
+            except queue.Full:
+                # Voice backlog must not accumulate without bound.
+                if self.on_error:
+                    self.on_error("Voice playback is behind; some speech was skipped")
+
+    def interrupt(self):
+        """Stop neural audio, discard queued fragments, keep worker alive."""
+        with self._lock:
+            self._generation += 1
+            self._stream_open = False
+            while True:
+                try:
+                    self.pending.get_nowait()
+                except queue.Empty:
+                    break
         try:
             import sounddevice as sd
             sd.stop()
@@ -183,6 +259,7 @@ class Speaker:
                     continue
                 with self._lock:
                     engine, voice, speed = self.engine, self.voice, self.speed
+                    self._in_playback = True
                 try:
                     if engine == "neural":
                         try:
@@ -198,8 +275,9 @@ class Speaker:
                     if self.on_error and self._active(generation):
                         self.on_error("Speech output unavailable: " + type(exc).__name__)
                 finally:
-                    if self.on_finished and self._active(generation):
-                        self.on_finished()
+                    with self._lock:
+                        self._in_playback = False
+                    self._notify_finished(generation)
         finally:
             if com_ready:
                 try:
@@ -212,6 +290,7 @@ class Speaker:
         self.stop_event.set()
         with self._lock:
             self._generation += 1
+            self._stream_open = False
         try:
             import sounddevice as sd
             sd.stop()
@@ -226,8 +305,10 @@ class WakeListener:
     """Offline wake-word (small Vosk model required). The microphone isn't sent online.
     Uses a narrow grammar; it is not speaker authentication. No privileged action follows without policy checks.
     """
-    def __init__(self, model_path: str, on_wake, on_error):
+    def __init__(self, model_path: str, on_wake, on_error,
+                 device: int | None = None):
         self.model_path = model_path
+        self.device = device
         self.on_wake = on_wake
         self.on_error = on_error
         self.stop_event = threading.Event()
@@ -252,7 +333,8 @@ class WakeListener:
             import sounddevice as sd
             model = _local_vosk_model(self.model_path)
             recognizer = KaldiRecognizer(model, SAMPLE_RATE, json.dumps(["jarvis", "hey jarvis", "[unk]"]))
-            with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=4000, dtype="int16", channels=1) as stream:
+            with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=4000,
+                                   dtype="int16", channels=1, device=self.device) as stream:
                 while not self.stop_event.is_set():
                     chunk, _ = stream.read(4000)
                     if recognizer.AcceptWaveform(bytes(chunk)):

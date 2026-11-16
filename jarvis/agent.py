@@ -69,6 +69,61 @@ class Agent:
                 return self._ask_cloud(text)
             raise RuntimeError("Offline AI unavailable: " + str(local_error)[:250]) from local_error
 
+    def ask_stream(self, text: str, on_sentence) -> str:
+        """Stream ordinary offline chat into speech before the full response ends.
+
+        Existing tool paths and cloud calls still go through ask(), so this
+        cannot make an unapproved action via streamed content.
+        """
+        if (not text.strip() or self.client is not None or
+                getattr(self.config, "provider", "local") != "local" or
+                not callable(on_sentence)):
+            return self.ask(text)
+        # Route any potentially actionable request through the audited tool
+        # executor rather than an untrusted text-only streamed shortcut.
+        if re.search(
+            r"\b(open|launch|start|search|find|read|email|gmail|calendar|"
+            r"event|schedule|send|remember|remind|notes|files|screen|"
+            r"computer|system|battery|status|delete|remove|install|"
+            r"download|save|change|update|move|copy|shutdown|restart)\b",
+            text, flags=re.I,
+        ):
+            return self.ask(text)
+        from .streaming import SentenceBuffer
+        client = self.local_runtime.client()
+        recent = self.memory.recent(6) if self.config.save_history else []
+        messages = [
+            {"role": "system", "content": PERSONA +
+             "\nYou are speaking aloud. Answer in short, natural sentences."},
+            *recent,
+            {"role": "user", "content": text[:4000]},
+        ]
+        events = client.chat.completions.create(
+            model=MODEL_ALIAS, messages=messages, temperature=0.2,
+            max_tokens=180, stream=True,
+        )
+        complete = ""
+        buffer = SentenceBuffer()
+        for event in events:
+            choices = getattr(event, "choices", []) or []
+            if not choices:
+                continue
+            delta = getattr(getattr(choices[0], "delta", None), "content", None)
+            if not isinstance(delta, str) or not delta:
+                continue
+            complete += delta
+            for segment in buffer.feed(delta):
+                on_sentence(segment)
+        for segment in buffer.flush():
+            on_sentence(segment)
+        complete = complete.strip()
+        if not complete:
+            raise RuntimeError("Local AI returned an empty streaming response")
+        if self.config.save_history:
+            self.memory.message("user", text)
+            self.memory.message("assistant", complete)
+        return complete
+
     def _ask_local(self, text: str) -> str:
         """OpenAI-compatible llama.cpp chat endpoint with bounded, allowlisted tools."""
         from .tools import local_command

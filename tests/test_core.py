@@ -120,3 +120,18 @@ class CoreTests(TestCase):
         self.assertEqual(fake.responses.create.call_count, 2)
         sent = fake.responses.create.call_args.kwargs["input"]
         self.assertTrue(any(isinstance(x, dict) and x.get("type") == "function_call_output" for x in sent))
+
+
+class SearchMemoryTests(TestCase):
+    def test_history_search_is_bounded_and_literal(self):
+        with TemporaryDirectory() as folder:
+            db = Memory(Path(folder) / "messages.db")
+            try:
+                db.message("user", "Check the warehouse location before sending")
+                db.message("assistant", "Warehouse location is listed")
+                self.assertEqual(len(db.search_messages("warehouse")), 2)
+                self.assertEqual(db.search_messages("%%"), [])
+                with self.assertRaises(ValueError):
+                    db.search_messages("")
+            finally:
+                db.close()

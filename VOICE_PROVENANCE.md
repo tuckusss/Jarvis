@@ -20,3 +20,5 @@ Full Apache 2.0 and MIT licence texts are downloaded into the installed applicat
 licenses directory during the build. These permissions do not automatically apply
 to the JARVIS source code itself. Third-party software dependencies have their own
 licenses and may require attribution before public distribution.
+
+The neural ONNX model-files-v1.1 release uses floating-point speed inputs; JARVIS pins `kokoro-onnx==0.6.1` to use the newer wrapper's correct model input type detection. Old wrapper 0.5.0 failed CI synthesis due to tensor(int32) versus tensor(float).

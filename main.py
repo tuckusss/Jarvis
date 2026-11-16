@@ -1,6 +1,21 @@
 """JARVIS desktop entrypoint with packaged Windows integration checks."""
 from __future__ import annotations
 import sys
+import os
+import tempfile
+import traceback
+
+
+def _write_failure(label: str) -> None:
+    """Capture packaged --windowed failures without exposing sensitive arguments."""
+    folder = os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()
+    path = os.path.join(folder, "jarvis-" + label + "-error.log")
+    try:
+        with open(path, "w", encoding="utf-8") as log:
+            traceback.print_exc(file=log)
+        print("JARVIS_DIAGNOSTIC_LOG=" + path, file=sys.stderr)
+    except OSError:
+        pass
 
 
 def package_check() -> int:
@@ -60,22 +75,46 @@ def offline_voice_check() -> int:
     return 0
 
 
+def gui_smoke_check() -> int:
+    """Check that the actual bundled Settings dialog opens without a display."""
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    from jarvis.config import Config
+    from jarvis.ui import SettingsDialog
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(Config())
+    if dialog.layout() is None:
+        raise RuntimeError("JARVIS Settings failed to initialise")
+    dialog.close()
+    return 0
+
+
 if __name__ == "__main__":
+    if "--gui-smoke-check" in sys.argv:
+        try:
+            sys.exit(gui_smoke_check())
+        except Exception:
+            _write_failure("gui")
+            sys.exit(1)
     if "--package-check" in sys.argv:
         try:
             sys.exit(package_check())
         except Exception as exc:
+            _write_failure("package")
             print(f"Package check failed: {exc}", file=sys.stderr)
             sys.exit(1)
     if "--offline-voice-check" in sys.argv:
         try:
             sys.exit(offline_voice_check())
         except Exception:
+            _write_failure("voice")
             sys.exit(1)
     if "--offline-inference-check" in sys.argv:
         try:
             sys.exit(offline_inference_check())
         except Exception as exc:
+            _write_failure("inference")
             print(f"Offline inference check failed: {exc}", file=sys.stderr or sys.__stderr__)
             sys.exit(1)
     from jarvis.ui import run

@@ -1,6 +1,8 @@
 """Allowlisted PC tools. All side effects are gated through a human confirmation callback."""
 from __future__ import annotations
 import json
+import contextvars
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import platform
@@ -10,9 +12,10 @@ import webbrowser
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import Callable
+from .project_workspace import project_root, read_project_status
 
 # Any tool that transmits information or modifies external state requires approval.
-APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder"}
+APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows", "read_project_status"}
 
 TOOLS = [
     {"type": "function", "name": "system_status", "description": "Read local CPU, RAM, battery, and operating system information.",
@@ -32,6 +35,21 @@ TOOLS = [
     {"type": "function", "name": "set_reminder", "description": "Schedule a local system-tray reminder for a future ISO datetime with timezone offset, after user approval. It fires while JARVIS is running.",
      "parameters": {"type": "object", "properties": {"when": {"type": "string"}, "message": {"type": "string"}}, "required": ["when", "message"], "additionalProperties": False}},
     {"type": "function", "name": "list_reminders", "description": "List future local reminders.",
+     "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
+    {"type": "function", "name": "open_project_folder",
+     "description": "Open a user-configured local business project folder in Windows Explorer (no file content is read).",
+     "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
+                    "required": ["name"], "additionalProperties": False}},
+    {"type": "function", "name": "read_project_status",
+     "description": "Read only JARVIS_STATUS.md from an explicitly configured project folder after approval; this is a manually updated status file, NOT live business data.",
+     "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
+                    "required": ["name"], "additionalProperties": False}},
+    {"type": "function", "name": "recall_conversation",
+     "description": "Search previous local chat messages when the user explicitly asks, after owner approval.",
+     "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+                    "required": ["query"], "additionalProperties": False}},
+    {"type": "function", "name": "lock_windows",
+     "description": "Lock this Windows user session now, after explicit approval; this tool cannot unlock Windows.",
      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
     {"type": "function", "name": "recall_notes", "description": "Find user-created notes from local memory.",
      "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False}},
@@ -62,8 +80,11 @@ def roots_for(config) -> list[Path]:
 
 
 class ToolExecutor:
-    def __init__(self, config, memory, google, approve: Callable[[str, str], bool], screen_vision):
+    def __init__(self, config, memory, google, approve: Callable[[str, str], bool],
+                 screen_vision, owner_gate=None):
         self.config, self.memory, self.google = config, memory, google
+        self.owner_gate = owner_gate
+        self._request_token = contextvars.ContextVar("jarvis_owner_request", default=None)
         self.approve, self.screen_vision = approve, screen_vision
         self.audit_path = memory.path.parent / "audit.jsonl"
 
@@ -83,6 +104,14 @@ class ToolExecutor:
             return f"Store this note locally?\n\n{str(args.get('note', ''))[:1200]}"
         if name == "set_reminder":
             return f"CREATE LOCAL REMINDER\nWhen: {args.get('when','')}\n{args.get('message','')}"
+        if name == "read_project_status":
+            return ("Read the local JARVIS_STATUS.md file for project '" +
+                    str(args.get("name", ""))[:80] +
+                    "'? Its content may be sent to the chosen AI provider.")
+        if name == "lock_windows":
+            return "Lock this Windows session now? You will need Windows Hello, a PIN or password to unlock it."
+        if name == "recall_conversation":
+            return "Search local JARVIS chat history for this phrase?\n" + str(args.get("query", ""))[:120]
         if name == "send_email":
             return (f"SEND EMAIL\nTo: {args.get('to', '')}\nSubject: {args.get('subject', '')}\n\n"
                     + str(args.get('body', ''))[:3000])
@@ -90,7 +119,26 @@ class ToolExecutor:
             return f"CREATE CALENDAR EVENT\n{args.get('summary','')}\nStart: {args.get('start','')}\nEnd: {args.get('end','')}\n{args.get('description','')}"
         return f"Allow {name}?"
 
+    @contextmanager
+    def authorised_request(self, token: str | None):
+        """Bind an owner capability to this worker's current execution context."""
+        reset = self._request_token.set(token)
+        try:
+            yield
+        finally:
+            self._request_token.reset(reset)
+
+    def _owner_allowed(self) -> bool:
+        gate = self.owner_gate
+        return gate is None or gate.check_command_token(self._request_token.get())
+
     def execute(self, name: str, args: dict):
+        # Auth is checked in the executor, not just at the GUI or wake-word.
+        # Unknown speakers and local API callers cannot use protected tools
+        # by skipping the chat entrypoint.
+        if not self._owner_allowed():
+            self._audit(name, False, "owner capability absent")
+            return {"error": "JARVIS is locked; owner verification required"}
         if name not in {t["name"] for t in TOOLS}:
             return {"error": "Unknown tool"}
         if not isinstance(args, dict):
@@ -101,6 +149,11 @@ class ToolExecutor:
                 self._audit(name, ok, "human confirmation")
                 if not ok:
                     return {"error": "Operation denied by user"}
+            # Lock or expiry may occur WHILE the confirmation dialog is open.
+            # A prior allow decision must not survive capability revocation.
+            if not self._owner_allowed():
+                self._audit(name, False, "owner access revoked before execution")
+                return {"error": "JARVIS locked before action execution"}
             result = self._dispatch(name, args)
             if name not in APPROVAL_REQUIRED:
                 self._audit(name, True, "executed")
@@ -177,6 +230,23 @@ class ToolExecutor:
             return {"saved": True}
         if name == "recall_notes":
             return {"notes": self.memory.recall(a["query"])}
+        if name == "recall_conversation":
+            return {"matches": self.memory.search_messages(a["query"])}
+        if name == "open_project_folder":
+            root = project_root(self.config, str(a["name"]))
+            if platform.system() != "Windows":
+                raise OSError("Opening project folders is supported only on Windows")
+            os.startfile(str(root))
+            return {"opened": "project folder", "name": str(a["name"])}
+        if name == "read_project_status":
+            return read_project_status(self.config, str(a["name"]))
+        if name == "lock_windows":
+            if platform.system() != "Windows":
+                raise OSError("Windows session lock only works on Windows")
+            import ctypes
+            if not ctypes.windll.user32.LockWorkStation():
+                raise OSError("Windows rejected workstation lock")
+            return {"locked": True}
         if name == "set_reminder":
             return {"reminder_id": self.memory.add_reminder(a["when"], a["message"])}
         if name == "list_reminders":
@@ -212,6 +282,24 @@ def local_command(text: str, executor: ToolExecutor) -> str | None:
             return _format_local_result(executor.execute("open_site", {"site": name}))
     if re.fullmatch(r"(?:check|show|what is|what's|tell me)\s+(?:my\s+)?(?:pc|computer|system)(?:\s+(?:health|status))?[.!]?", utterance):
         return _format_local_result(executor.execute("system_status", {}))
+    project_folder = re.fullmatch(
+        r"(?:open|show)\s+(?:my\s+)?(.+?)\s+(?:project\s+)?folder[.!]?",
+        utterance,
+    )
+    if project_folder:
+        result = executor.execute("open_project_folder", {
+            "name": project_folder.group(1)
+        })
+        return _format_local_result(result)
+    project_status = re.fullmatch(
+        r"(?:show|read|check)\s+(?:my\s+)?(.+?)\s+(?:local\s+)?project\s+status[.!]?",
+        utterance,
+    )
+    if project_status:
+        result = executor.execute("read_project_status", {
+            "name": project_status.group(1)
+        })
+        return _format_local_result(result)
     if re.fullmatch(r"(?:list|show|what are)\s+(?:my\s+)?reminders[.!]?", utterance):
         return _format_local_result(executor.execute("list_reminders", {}))
     m = re.fullmatch(r"(?:search|find)\s+(?:my\s+)?files\s+(?:for|named)\s+(.+)", utterance)
@@ -230,6 +318,8 @@ def _format_local_result(result: dict) -> str:
         return "Opened " + str(result["opened"]) + "."
     if "saved" in result:
         return "Saved to local memory."
+    if result.get("source") == "JARVIS_STATUS.md":
+        return "Local status from " + str(result["project"]) + ":\n" + str(result["content"])[:4000]
     if "files" in result:
         return "Matching files: " + (", ".join(result["files"][:20]) or "none found")
     if "reminders" in result:

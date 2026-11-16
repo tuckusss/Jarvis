@@ -51,6 +51,7 @@ class LocalRuntime:
         self.proc = None
         self._popen = popen or subprocess.Popen
         self.timeout = connection_timeout
+        self.gaming_mode_enabled = True
         self._lock = threading.RLock()
         self._token = ""
         self._port = 0
@@ -84,11 +85,13 @@ class LocalRuntime:
                 )
             self._port = _free_port()
             self._token = secrets.token_urlsafe(32)
+            from .gaming import installed_game_running, select_inference_threads
             cpus = os.cpu_count() or 4
+            gaming = self.gaming_mode_enabled and installed_game_running().active
             args = [
                 str(runner_path()), "--model", str(model_path()),
                 "--alias", MODEL_ALIAS, "--host", "127.0.0.1", "--port", str(self._port),
-                "--ctx-size", "4096", "--threads", str(min(max(2, cpus - 2), 6)),
+                "--ctx-size", "4096", "--threads", str(select_inference_threads(cpus, gaming=gaming)),
                 "--n-gpu-layers", "0", "--no-webui", "--api-key", self._token,
             ]
             kwargs = {"cwd": str(runner_path().parent), "stdin": subprocess.DEVNULL,

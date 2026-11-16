@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipDependencyInstall,
-    [string]$Version = "0.6.0"
+    [string]$Version = "0.7.0"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -69,6 +69,10 @@ $pyinstallerArgs = @(
     "--collect-all", "kokoro_onnx",
     "--collect-all", "onnxruntime",
     "--collect-all", "phonemizer",
+    "--collect-all", "language_tags",
+    "--collect-all", "segments",
+    "--collect-all", "csvw",
+    "--collect-all", "clldutils",
     "--collect-all", "espeakng_loader",
     "--add-binary", ("$root\assets\local_runtime;local_runtime"),
     "--collect-all", "keyring",
@@ -88,9 +92,28 @@ if (-not (Test-Path $exe)) { throw "PyInstaller output not found: $exe" }
 
 # An import-only smoke test runs even on CI without a desktop or microphone.
 $p = Start-Process -FilePath $exe -ArgumentList '--package-check' -Wait -PassThru -WindowStyle Hidden
-if ($p.ExitCode -ne 0) { throw "Packaged app import check failed (exit code $($p.ExitCode))" }
+
+if ($p.ExitCode -ne 0) {
+    $log = Join-Path $env:TEMP 'jarvis-package-error.log'
+    if ($env:RUNNER_TEMP) { $log = Join-Path $env:RUNNER_TEMP 'jarvis-package-error.log' }
+    if (Test-Path $log) { Get-Content $log -Tail 55 | ForEach-Object { Write-Host $_ } }
+    throw "Packaged app import check failed (exit code $($p.ExitCode))"
+}
+$p = Start-Process -FilePath $exe -ArgumentList '--gui-smoke-check' -Wait -PassThru -WindowStyle Hidden
+if ($p.ExitCode -ne 0) {
+    $log = Join-Path $env:TEMP 'jarvis-gui-error.log'
+    if ($env:RUNNER_TEMP) { $log = Join-Path $env:RUNNER_TEMP 'jarvis-gui-error.log' }
+    if (Test-Path $log) { Get-Content $log -Tail 55 | ForEach-Object { Write-Host $_ } }
+    throw "Packaged Settings UI smoke check failed (exit code $($p.ExitCode))"
+}
 $p = Start-Process -FilePath $exe -ArgumentList '--offline-voice-check' -Wait -PassThru -WindowStyle Hidden
-if ($p.ExitCode -ne 0) { throw "Packaged offline neural speech synthesis failed (exit code $($p.ExitCode))" }
+
+if ($p.ExitCode -ne 0) {
+    $log = Join-Path $env:TEMP 'jarvis-voice-error.log'
+    if ($env:RUNNER_TEMP) { $log = Join-Path $env:RUNNER_TEMP 'jarvis-voice-error.log' }
+    if (Test-Path $log) { Get-Content $log -Tail 55 | ForEach-Object { Write-Host $_ } }
+    throw "Packaged offline neural speech synthesis failed (exit code $($p.ExitCode))"
+}
 
 $isccCandidates = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",

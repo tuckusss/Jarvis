@@ -31,12 +31,20 @@ class Config:
     voice_name: str = "bm_george"
     voice_speed: float = 1.0
     wake_enabled: bool = False
+    gaming_mode_enabled: bool = True
+    gaming_pause_wake: bool = True
+    gaming_mute_speech: bool = True
+    microphone_device: int | None = None
     wake_model_path: str = ""  # legacy compatibility; normally auto-discovered
     save_history: bool = True
     google_credentials_path: str = ""
     google_write_enabled: bool = False
     sites: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SITES))
     custom_folder: str = ""  # optional extra searchable folder; explicit user opt-in
+    project_folders: dict[str, str] = field(default_factory=lambda: {
+        "PayCore": str(Path.home() / "Desktop" / "PayCore")
+    })  # Paths are local; no code or project files are uploaded automatically.
+
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":

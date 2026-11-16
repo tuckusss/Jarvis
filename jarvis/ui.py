@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import sys
 import threading
+import time
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QObject, Signal, Slot, QTimer, QRunnable, QThreadPool, QSize, QUrl
@@ -12,6 +13,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap,
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
+    QInputDialog,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSystemTrayIcon,
     QTextEdit, QVBoxLayout, QWidget,
 )
@@ -20,6 +22,10 @@ from .agent import Agent
 from .config import Config, api_key, save_api_key, data_dir
 from .google_connector import GoogleConnector
 from .memory import Memory
+from .owner_auth import OwnerGate
+from .gaming import GamingState, installed_game_running
+from .audio_devices import input_devices, microphone_probe
+from .updates import check_official_release
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
 from .neural_voice import VOICE_CHOICES, neural_available
@@ -156,6 +162,7 @@ class Bridge(QObject):
     wake_detected = Signal()
     wake_error = Signal(str)
     speech_finished = Signal()
+    speech_sentence = Signal(str)
     speech_error = Signal(str)
 
 
@@ -164,6 +171,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("JARVIS / CONFIGURATION")
         self.setMinimumWidth(560)
+        self.resize(610, 700)
         self.cfg = cfg
         self.setStyleSheet(QSS)
         lay = QVBoxLayout(self)
@@ -202,6 +210,20 @@ class SettingsDialog(QDialog):
         self.history.setChecked(cfg.save_history)
         self.wake = QCheckBox("Enable offline 'Jarvis' wake word (no model folder needed)")
         self.wake.setChecked(cfg.wake_enabled)
+        self.microphones = QComboBox()
+        self.microphones.addItem("Windows default microphone", None)
+        for device_id, label in input_devices():
+            self.microphones.addItem(f"{label} (#{device_id})", device_id)
+        selected_mic = self.microphones.findData(cfg.microphone_device)
+        self.microphones.setCurrentIndex(max(0, selected_mic))
+        self.microphone_test = QPushButton("TEST SELECTED MICROPHONE")
+        self.microphone_test.clicked.connect(self._test_microphone)
+        self.gaming_enabled = QCheckBox("Automatically detect Crusader Kings III / Warband")
+        self.gaming_enabled.setChecked(cfg.gaming_mode_enabled)
+        self.gaming_pause_wake = QCheckBox("Pause wake listening while gaming")
+        self.gaming_pause_wake.setChecked(cfg.gaming_pause_wake)
+        self.gaming_mute_speech = QCheckBox("Mute spoken replies during gameplay")
+        self.gaming_mute_speech.setChecked(cfg.gaming_mute_speech)
         self.custom = QLineEdit(cfg.custom_folder)
         self.custom.setPlaceholderText("Optional extra folder to search; blank = none")
         self.google = QLineEdit(cfg.google_credentials_path)
@@ -211,6 +233,9 @@ class SettingsDialog(QDialog):
         self.sites = QTextEdit()
         self.sites.setFixedHeight(92)
         self.sites.setPlainText(json.dumps(cfg.sites, indent=2))
+        self.projects = QTextEdit()
+        self.projects.setFixedHeight(78)
+        self.projects.setPlainText(json.dumps(cfg.project_folders, indent=2))
         form.addRow("AI provider", self.provider)
         form.addRow("OpenAI API key (optional)", self.key)
         form.addRow("Cloud model (if used)", self.model)
@@ -220,6 +245,11 @@ class SettingsDialog(QDialog):
         form.addRow("Speaking speed", self.voice_speed)
         form.addRow("Local memory", self.history)
         form.addRow("Wake listener", self.wake)
+        form.addRow("Input microphone", self.microphones)
+        form.addRow("Microphone diagnostics", self.microphone_test)
+        form.addRow("Gaming focus", self.gaming_enabled)
+        form.addRow("Gaming microphone", self.gaming_pause_wake)
+        form.addRow("Gaming speech", self.gaming_mute_speech)
         model_path = resolve_model(cfg.wake_model_path)
         self.model_status = QLabel("Vosk wake model: bundled / ready" if model_path else "Vosk wake model: automatically installed when enabled")
         self.model_status.setWordWrap(True)
@@ -232,7 +262,17 @@ class SettingsDialog(QDialog):
         form.addRow("Google OAuth JSON", self.google)
         form.addRow("Google write access", self.write)
         form.addRow("HTTPS bookmarks (JSON)", self.sites)
-        lay.addLayout(form)
+        form.addRow("Local project folders (JSON)", self.projects)
+        # Many security, audio and gaming controls must remain usable on
+        # standard 768p laptop displays. Keep Save/Cancel below a scroll area.
+        scroller = QScrollArea(self)
+        scroller.setWidgetResizable(True)
+        scroller.setMinimumHeight(360)
+        scroller.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        content.setLayout(form)
+        scroller.setWidget(content)
+        lay.addWidget(scroller, 1)
         api_actions = QHBoxLayout()
         open_keys = QPushButton("CREATE / FIND API KEY")
         open_keys.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://platform.openai.com/api-keys")))
@@ -241,6 +281,9 @@ class SettingsDialog(QDialog):
         self.test_key_button.clicked.connect(self._test_api_key)
         api_actions.addWidget(self.test_key_button)
         lay.addLayout(api_actions)
+        self.check_updates_button = QPushButton("CHECK OFFICIAL JARVIS RELEASES")
+        self.check_updates_button.clicked.connect(self._check_updates)
+        lay.addWidget(self.check_updates_button)
         choose = QPushButton("Browse Google credentials…")
         choose.clicked.connect(self._pick_google)
         lay.addWidget(choose)
@@ -248,6 +291,71 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.apply)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+
+    def _check_updates(self):
+        self.check_updates_button.setEnabled(False)
+        self.check_updates_button.setText("CHECKING OFFICIAL RELEASES…")
+        self._update_task = Task(lambda: check_official_release("0.7.0"))
+        self._update_task.signals.done.connect(self._update_result)
+        self._update_task.signals.failed.connect(self._update_error)
+        QThreadPool.globalInstance().start(self._update_task)
+
+    def _update_result(self, result):
+        self.check_updates_button.setEnabled(True)
+        self.check_updates_button.setText("CHECK OFFICIAL JARVIS RELEASES")
+        if result.get("update") and result.get("url"):
+            yes = QMessageBox.question(
+                self, "Official JARVIS release",
+                "A newer stable release " + result["version"] +
+                " is available. Open the official GitHub release page?\n\n"
+                "JARVIS will not download or install an unverified program.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if yes == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl(result["url"]))
+        else:
+            QMessageBox.information(
+                self, "JARVIS updates",
+                "No newer stable public release is available. Development "
+                "drafts are excluded from this check."
+            )
+
+    def _update_error(self, _error):
+        self.check_updates_button.setEnabled(True)
+        self.check_updates_button.setText("CHECK OFFICIAL JARVIS RELEASES")
+        QMessageBox.warning(
+            self, "Update check unavailable",
+            "Could not contact the official GitHub release endpoint. "
+            "No application changes were made."
+        )
+
+    def _test_microphone(self):
+        """Half-second local volume check, only when the user clicks Test."""
+        self.microphone_test.setEnabled(False)
+        self.microphone_test.setText("TESTING MICROPHONE…")
+        target = self.microphones.currentData()
+        self._mic_task = Task(lambda: microphone_probe(target))
+        self._mic_task.signals.done.connect(self._microphone_test_ok)
+        self._mic_task.signals.failed.connect(self._microphone_test_failed)
+        QThreadPool.globalInstance().start(self._mic_task)
+
+    def _microphone_test_ok(self, result):
+        self.microphone_test.setEnabled(True)
+        self.microphone_test.setText("TEST SELECTED MICROPHONE")
+        QMessageBox.information(
+            self, "Microphone test",
+            f"Microphone opened successfully. Average audio level: {result['rms']:.0f}. "
+            "Audio was neither recorded to disk nor uploaded."
+        )
+
+    def _microphone_test_failed(self, _error):
+        self.microphone_test.setEnabled(True)
+        self.microphone_test.setText("TEST SELECTED MICROPHONE")
+        QMessageBox.warning(
+            self, "Microphone unavailable",
+            "Could not read this microphone. Check Windows microphone privacy settings "
+            "and whether another application has exclusive access."
+        )
 
     def _test_api_key(self):
         """User-initiated, asynchronous credential validation without logging secrets."""
@@ -288,6 +396,12 @@ class SettingsDialog(QDialog):
     def apply(self):
         try:
             sites = json.loads(self.sites.toPlainText())
+            project_folders = json.loads(self.projects.toPlainText())
+            if not isinstance(project_folders, dict) or any(
+                    not isinstance(k, str) or not k.strip() or
+                    not isinstance(v, str) or not v.strip()
+                    for k, v in project_folders.items()):
+                raise ValueError("Project folders must be a JSON map of names to paths")
             if not isinstance(sites, dict) or any(not isinstance(k,str) or not isinstance(v,str) for k,v in sites.items()):
                 raise ValueError("Bookmarks must be an object of names to URLs")
             from urllib.parse import urlparse
@@ -298,6 +412,7 @@ class SettingsDialog(QDialog):
             if self.key.text().strip():
                 save_api_key(self.key.text())
             self.cfg.sites = sites
+            self.cfg.project_folders = project_folders
             self.cfg.provider = self.provider.currentData()
             self.cfg.model = self.model.text().strip() or "gpt-5.5"
             self.cfg.voice_enabled = self.voice.isChecked()
@@ -306,6 +421,10 @@ class SettingsDialog(QDialog):
             self.cfg.voice_speed = float(self.voice_speed.currentData())
             self.cfg.save_history = self.history.isChecked()
             self.cfg.wake_enabled = self.wake.isChecked()
+            self.cfg.microphone_device = self.microphones.currentData()
+            self.cfg.gaming_mode_enabled = self.gaming_enabled.isChecked()
+            self.cfg.gaming_pause_wake = self.gaming_pause_wake.isChecked()
+            self.cfg.gaming_mute_speech = self.gaming_mute_speech.isChecked()
             # Vosk model path is discovered automatically from bundled files or app data.
             self.cfg.wake_model_path = ""
             self.cfg.custom_folder = self.custom.text().strip()
@@ -330,8 +449,11 @@ class JarvisWindow(QMainWindow):
         self.bridge.wake_detected.connect(self._on_wake)
         self.bridge.wake_error.connect(self._wake_error)
         self.bridge.speech_finished.connect(self._on_speech_finished)
+        self.bridge.speech_sentence.connect(self._on_stream_sentence)
         self.bridge.speech_error.connect(self._notice)
         self.config = Config.load()
+        self.owner_gate = OwnerGate()
+        self.game_state = GamingState(False)
         self.memory = Memory()
         self.google = GoogleConnector(self.config)
         self.speaker = Speaker(
@@ -341,16 +463,28 @@ class JarvisWindow(QMainWindow):
             speed=self.config.voice_speed,
         )
         self._speaking = False
+        self._streamed_speech = False
+        self._speech_muted = False
         self.wake_listener = None
         self._installing_wake_model = False
         self._busy = False
         self._quitting = False
+        self._request_started = 0.0
+        self._first_audio_latency = 0.0
         self.agent = None
         executor = ToolExecutor(self.config, self.memory, self.google, self._approve,
-                                lambda: self.agent.describe_screen())
+                                lambda: self.agent.describe_screen(),
+                                owner_gate=self.owner_gate)
+        self.executor = executor
         self.agent = Agent(self.config, self.memory, executor)
+        self.agent.local_runtime.gaming_mode_enabled = self.config.gaming_mode_enabled
         self._build_ui()
         self._make_tray()
+        self._sync_owner_visibility()
+        self.game_timer = QTimer(self)
+        self.game_timer.timeout.connect(self._refresh_gaming)
+        self.game_timer.start(5000)
+        self._refresh_gaming()
         self.stats_timer = QTimer(self)
         self.stats_timer.timeout.connect(self._refresh_stats)
         self.stats_timer.start(3500)
@@ -360,7 +494,7 @@ class JarvisWindow(QMainWindow):
         self._poll_reminders()
         self._refresh_stats()
         self._start_wake()
-        if self.config.provider in ("local", "hybrid"):
+        if self.config.provider in ("local", "hybrid") and not self.game_state.active:
             QTimer.singleShot(2500, self._warm_local_brain)
         self._append("SYSTEM", "JARVIS initialised. Offline AI is the default; no OpenAI API key is required. Enable the hands-free wake listener in Settings. Closing the window keeps the tray assistant running.")
         if not (data_dir() / "onboarding_complete.flag").exists():
@@ -382,6 +516,9 @@ class JarvisWindow(QMainWindow):
         settings = QPushButton("⚙  SETTINGS")
         settings.clicked.connect(self.settings)
         header.addWidget(settings)
+        owner = QPushButton("OWNER ACCESS")
+        owner.clicked.connect(self.manage_owner_access)
+        header.addWidget(owner)
         root.addLayout(header)
         line = QFrame(); line.setFixedHeight(2); line.setStyleSheet("background: #11445c; border: 0;")
         root.addWidget(line)
@@ -398,6 +535,8 @@ class JarvisWindow(QMainWindow):
             ("MY MEMORIES", "What notes have you remembered about my projects?"),
             ("REMINDERS", "What local reminders do I have scheduled?"),
             ("OPEN NOTEPAD", "Open Notepad on this PC"),
+            ("PAYCORE FOLDER", "Open PayCore project folder"),
+            ("PAYCORE STATUS", "Read PayCore local project status"),
         ]:
             b = QPushButton(title); b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _, x=prompt: self.submit(x))
@@ -423,6 +562,9 @@ class JarvisWindow(QMainWindow):
         self.listen.setObjectName("primary")
         self.listen.clicked.connect(self._listen)
         controls.addWidget(self.listen)
+        self.stop_voice_button = QPushButton("STOP SPEAKING")
+        self.stop_voice_button.clicked.connect(self.stop_speaking)
+        controls.addWidget(self.stop_voice_button)
         self.voice_button = QPushButton("VOICE  ON" if self.config.voice_enabled else "VOICE  OFF")
         self.voice_button.clicked.connect(self.toggle_voice)
         controls.addWidget(self.voice_button)
@@ -434,7 +576,8 @@ class JarvisWindow(QMainWindow):
         self.cpu = QLabel("CPU   -- %")
         self.ram = QLabel("RAM   -- %")
         self.batt = QLabel("BATTERY   --")
-        for widget in [self.cpu, self.ram, self.batt]:
+        self.response_speed = QLabel("RESPONSE   --")
+        for widget in [self.cpu, self.ram, self.batt, self.response_speed]:
             widget.setStyleSheet("font: bold 16px Consolas; color:#b6f5ff; padding: 7px 0;")
             right_l.addWidget(widget)
         right_l.addSpacing(10)
@@ -442,7 +585,8 @@ class JarvisWindow(QMainWindow):
         self.api_status = muted("AI: LOCAL / FREE")
         self.google_status = muted("GOOGLE: OPTIONAL")
         self.mic_status = muted("MICROPHONE: OFF")
-        for widget in (self.api_status, self.google_status, self.mic_status):
+        self.game_status = muted("GAMING: NORMAL")
+        for widget in (self.api_status, self.google_status, self.mic_status, self.game_status):
             right_l.addWidget(widget)
         right_l.addStretch()
         connect = QPushButton("CONNECT GOOGLE")
@@ -489,7 +633,8 @@ class JarvisWindow(QMainWindow):
             self._start_wake()
 
     def _warm_local_brain(self):
-        if not self._quitting and self.config.provider in ("local", "hybrid"):
+        if (not self._quitting and not self.game_state.active
+                and self.config.provider in ("local", "hybrid")):
             self._run_task(lambda: self.agent.local_runtime.client(), lambda result: None,
                            lambda error: self._append("SYSTEM", "Local AI prewarm unavailable: " + error[:130]))
 
@@ -500,19 +645,46 @@ class JarvisWindow(QMainWindow):
         self.pool.start(task)
         # The signals are QObject-owned and connected until the task finishes.
 
-    def submit(self, text: str):
+    def submit(self, text: str, from_voice: bool = False):
         text = text.strip()
         if self._busy or not text:
+            return
+        if not self._authorise_owner("issue a JARVIS command", voice_command=from_voice):
+            self._set_busy(False)
+            return
+        capability = self.owner_gate.issue_command_token(voice_command=from_voice)
+        if capability is None:
+            self._notice("Command denied: owner capability missing.")
+            self._set_busy(False)
             return
         if self.wake_listener:
             self.wake_listener.stop()
         self.entry.clear()
         self._append("USER", text)
+        self._request_started = time.monotonic()
+        self._first_audio_latency = 0.0
+        self._streamed_speech = False
+        self._speech_muted = False
         self._set_busy(True, "REASONING / PROCESSING REQUEST")
-        self._run_task(lambda: self.agent.ask(text), self._answer, self._fail_answer)
+        self._run_task(
+            lambda: self._execute_owner_request(text, capability),
+            self._answer, self._fail_answer,
+        )
+
+    def _execute_owner_request(self, text: str, capability: str | None):
+        # Thread-local capability is valid only inside this task, not globally
+        # and not for requests started by other applications or speakers.
+        try:
+            with self.executor.authorised_request(capability):
+                return self.agent.ask_stream(
+                    text, lambda chunk: self.bridge.speech_sentence.emit(chunk)
+                )
+        finally:
+            self.owner_gate.revoke_command_token(capability)
 
     def _say(self, text: str):
-        if not self.config.voice_enabled or not text.strip():
+        if (not self.config.voice_enabled or not text.strip() or
+                (self.game_state.active and self.config.gaming_mute_speech)):
             return
         if self.wake_listener:
             self.wake_listener.stop()
@@ -520,25 +692,65 @@ class JarvisWindow(QMainWindow):
         self._speaking = True
         self.speaker.speak(text)
 
+    @Slot(str)
+    def _on_stream_sentence(self, sentence: str):
+        if (not self.config.voice_enabled or self._speech_muted or not sentence.strip()
+                or (self.game_state.active and self.config.gaming_mute_speech)):
+            return
+        if not self._first_audio_latency and self._request_started:
+            self._first_audio_latency = time.monotonic() - self._request_started
+            self.response_speed.setText(
+                f"FIRST SPEECH   {self._first_audio_latency:.1f} s"
+            )
+        if not self._streamed_speech:
+            self._streamed_speech = True
+            if self.wake_listener:
+                self.wake_listener.stop()
+                self.wake_listener = None
+            self._speaking = True
+            self.speaker.begin_stream(sentence)
+        else:
+            self.speaker.enqueue(sentence)
+
+    def stop_speaking(self):
+        """Stop speaking immediately without cancelling an in-flight safe reply."""
+        self._speech_muted = True
+        self.speaker.interrupt()
+        self._speaking = False
+        if not self._busy and self.config.wake_enabled:
+            self._start_wake()
+
     def _answer(self, answer):
+        if self._request_started:
+            elapsed = time.monotonic() - self._request_started
+            self.response_speed.setText(f"ANSWER   {elapsed:.1f} s")
         self._append("JARVIS", str(answer))
-        if self.config.voice_enabled:
+        if self._streamed_speech and not self._speech_muted:
+            self.speaker.end_stream()
+        elif self.config.voice_enabled and not self._speech_muted:
             self._say(str(answer))
         self._set_busy(False)
 
     def _fail_answer(self, err):
+        if self._request_started:
+            elapsed = time.monotonic() - self._request_started
+            self.response_speed.setText(f"FAILED   {elapsed:.1f} s")
         self._append("SYSTEM", "Operation failed: " + err)
+        if self._streamed_speech and not self._speech_muted:
+            self.speaker.end_stream()
         self._set_busy(False)
 
     def _listen(self):
         if self._busy:
             return
+        if self._speaking:
+            self.stop_speaking()
         if self.wake_listener:
             self.wake_listener.stop()
         self._set_busy(True, "MICROPHONE ACTIVE / SPEAK NOW")
         self.mic_status.setText("MICROPHONE: RECORDING")
         def capture_and_transcribe():
-            wav = record_phrase()
+            wav = record_phrase(device=self.config.microphone_device)
             if self.config.provider == "openai":
                 return transcribe(wav, self.agent._client(), self.config.transcription_model)
             wake_model = resolve_model(self.config.wake_model_path)
@@ -557,7 +769,7 @@ class JarvisWindow(QMainWindow):
         # Do not restart the wake microphone between a transcript and its dispatch.
         if text.strip():
             self._busy = False
-            self.submit(text)
+            self.submit(text, from_voice=True)
         else:
             self._append("SYSTEM", "No speech detected")
             self._set_busy(False)
@@ -610,13 +822,101 @@ class JarvisWindow(QMainWindow):
         if not self._busy and self.config.wake_enabled:
             self._start_wake()
 
+    def _sync_owner_visibility(self):
+        """Prevent casual disclosure of chat while JARVIS owner gate is locked."""
+        if hasattr(self, "conversation"):
+            self.conversation.setVisible(self.owner_gate.authorised())
+
+    def _authorise_owner(self, action: str, *, voice_command: bool = False) -> bool:
+        if self.owner_gate.authorised(voice_command=voice_command):
+            return True
+        message = (
+            "Voice identification is not yet installed. Enter your owner "
+            "passphrase to " + action + "."
+            if voice_command else "Enter your JARVIS owner passphrase to " + action + "."
+        )
+        phrase, ok = QInputDialog.getText(
+            self, "JARVIS / OWNER VERIFICATION", message, QLineEdit.Password
+        )
+        if not ok or not self.owner_gate.unlock(phrase, voice_command=voice_command):
+            self._notice("Owner authorisation denied. No private action executed.")
+            self._sync_owner_visibility()
+            return False
+        self._sync_owner_visibility()
+        return True
+
+    def manage_owner_access(self):
+        """Opt-in owner passphrase gate; NOT voice biometrics or Windows sign-in."""
+        if not self.owner_gate.enrolled:
+            consent = QMessageBox.question(
+                self, "JARVIS / OWNER LOCK",
+                "Create a JARVIS-only owner passphrase?\n\n"
+                "This blocks unapproved JARVIS commands, but does not unlock or "
+                "replace Windows sign-in. Voice commands will request the "
+                "passphrase until separate speaker verification is developed.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if consent != QMessageBox.Yes:
+                return
+            phrase, ok = QInputDialog.getText(
+                self, "Create owner passphrase",
+                "Enter a unique passphrase of at least 12 characters:",
+                QLineEdit.Password,
+            )
+            if not ok:
+                return
+            second, ok = QInputDialog.getText(
+                self, "Confirm owner passphrase",
+                "Re-enter the owner passphrase:", QLineEdit.Password,
+            )
+            if not ok or phrase != second:
+                self._notice("Owner passphrase confirmation did not match.")
+                return
+            try:
+                self.owner_gate.enrol(phrase)
+                self._sync_owner_visibility()
+                self._notice("Owner gate enabled. JARVIS commands now require confirmation.")
+            except (ValueError, PermissionError, OSError) as exc:
+                self._notice("Owner gate setup failed: " + str(exc))
+            return
+        phrase, ok = QInputDialog.getText(
+            self, "JARVIS / OWNER LOCK",
+            "Enter the current owner passphrase:", QLineEdit.Password,
+        )
+        if not ok or not self.owner_gate.unlock(phrase):
+            self._notice("Owner verification denied.")
+            return
+        result = QMessageBox.question(
+            self, "JARVIS / OWNER LOCK",
+            "Owner verified.\n\nDisable the JARVIS-only passphrase gate? "
+            "Choose No to leave it enabled and unlocked for five minutes.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if result == QMessageBox.Yes:
+            self.owner_gate.disable()
+            self._sync_owner_visibility()
+            self._notice("JARVIS owner gate disabled.")
+        else:
+            self._sync_owner_visibility()
+            self._notice("JARVIS owner gate unlocked for five minutes.")
+
+    def lock_owner_access(self):
+        self.owner_gate.lock()
+        self._sync_owner_visibility()
+        self.stop_speaking()
+        self._notice("JARVIS owner access locked.")
+
     def settings(self):
+        if not self._authorise_owner("change JARVIS settings"):
+            return
         dlg = SettingsDialog(self.config, self)
         if dlg.exec() == QDialog.Accepted:
             self.agent.client = None  # update API key and model
             self.toggle_voice(update_only=True)
             self.speaker.configure(engine=self.config.voice_engine,
                                    voice=self.config.voice_name, speed=self.config.voice_speed)
+            self.agent.local_runtime.gaming_mode_enabled = self.config.gaming_mode_enabled
+            self._refresh_gaming()
             self._start_wake()
             self._sync_mic_action()
             self._refresh_stats()
@@ -624,11 +924,15 @@ class JarvisWindow(QMainWindow):
 
     def toggle_voice(self, update_only=False):
         if not update_only:
+            if not self._authorise_owner("change spoken output"):
+                return
             self.config.voice_enabled = not self.config.voice_enabled
             self.config.save()
         self.voice_button.setText("VOICE  ON" if self.config.voice_enabled else "VOICE  OFF")
 
     def clear_history(self):
+        if not self._authorise_owner("clear your conversation history"):
+            return
         if QMessageBox.question(self, "Clear local history", "Delete all local conversation history? Notes are retained.",
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
             self.memory.clear_history()
@@ -637,6 +941,8 @@ class JarvisWindow(QMainWindow):
 
     def connect_google(self):
         if self._busy:
+            return
+        if not self._authorise_owner("connect a Google account"):
             return
         if not self.config.google_credentials_path:
             self._notice("Add your Google OAuth Desktop credentials file in Settings first")
@@ -650,6 +956,9 @@ class JarvisWindow(QMainWindow):
             self.wake_listener = None
         if self._busy or self._speaking or not self.config.wake_enabled:
             return
+        if self.game_state.active and self.config.gaming_pause_wake:
+            self.mic_status.setText("MICROPHONE: PAUSED FOR GAME")
+            return
         model = resolve_model(self.config.wake_model_path)
         if not model:
             if not self._installing_wake_model:
@@ -658,9 +967,12 @@ class JarvisWindow(QMainWindow):
                 self._append("SYSTEM", "Downloading and verifying the offline wake model automatically (about 40 MB). Push-to-talk remains available.")
                 self._run_task(install_model, self._wake_model_installed, self._wake_model_failed)
             return
-        self.wake_listener = WakeListener(str(model),
-                                           lambda: self.bridge.wake_detected.emit(),
-                                           lambda message: self.bridge.wake_error.emit(message))
+        self.wake_listener = WakeListener(
+            str(model),
+            lambda: self.bridge.wake_detected.emit(),
+            lambda message: self.bridge.wake_error.emit(message),
+            device=self.config.microphone_device,
+        )
         self.wake_listener.start()
         self.mic_status.setText("MICROPHONE: LOCAL WAKE MODE")
 
@@ -694,18 +1006,45 @@ class JarvisWindow(QMainWindow):
             self.tray.showMessage("JARVIS", text[:160], QSystemTrayIcon.Information, 4000)
 
     def _poll_reminders(self):
+        if self.owner_gate.enrolled and not self.owner_gate.authorised():
+            # Preserve pending reminders until private access is unlocked.
+            return
         try:
             for item in self.memory.due_reminders():
                 message = item["message"]
                 self._append("SYSTEM", "REMINDER: " + message)
                 if self.tray:
                     self.tray.showMessage("JARVIS REMINDER", message[:200], QSystemTrayIcon.Information, 10000)
-                if self.config.voice_enabled:
+                if self.config.voice_enabled and self.owner_gate.authorised():
                     self._say("Reminder. " + message)
         except Exception as exc:
             self._append("SYSTEM", "Reminder check failed: " + str(exc))
 
+    def _refresh_gaming(self):
+        new = (installed_game_running() if self.config.gaming_mode_enabled
+               else GamingState(False))
+        changed = new.active != self.game_state.active
+        self.game_state = new
+        if not hasattr(self, "game_status"):
+            return
+        self.game_status.setText(
+            "GAMING: " + (new.title.upper() if new.active else "NORMAL")
+        )
+        if changed and new.active:
+            if self.config.gaming_pause_wake and self.wake_listener:
+                self.wake_listener.stop()
+                self.wake_listener = None
+                self.mic_status.setText("MICROPHONE: PAUSED FOR GAME")
+            if self.config.gaming_mute_speech and self._speaking:
+                self.stop_speaking()
+            self._append("SYSTEM", "Gaming focus active: " + new.title)
+        elif changed:
+            self._append("SYSTEM", "Gaming focus ended; normal assistant restored.")
+            if not self._busy:
+                self._start_wake()
+
     def _refresh_stats(self):
+        self._sync_owner_visibility()
         try:
             import psutil
             self.cpu.setText(f"CPU   {psutil.cpu_percent():.0f} %")
@@ -735,6 +1074,8 @@ class JarvisWindow(QMainWindow):
         menu = QMenu()
         menu.addAction("Open JARVIS", self._show)
         menu.addAction("Listen", self._show_and_listen)
+        menu.addAction("Stop speaking", self.stop_speaking)
+        menu.addAction("Lock JARVIS owner access", self.lock_owner_access)
         self.mic_menu_action = menu.addAction("Mute wake microphone", self._toggle_wake_microphone)
         self._sync_mic_action()
         menu.addSeparator()
@@ -750,6 +1091,8 @@ class JarvisWindow(QMainWindow):
             )
 
     def _toggle_wake_microphone(self):
+        if not self._authorise_owner("change microphone listening"):
+            return
         self.config.wake_enabled = not self.config.wake_enabled
         self.config.save()
         self._sync_mic_action()
