@@ -12,9 +12,10 @@ import webbrowser
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import Callable
+from .project_workspace import project_root, read_project_status
 
 # Any tool that transmits information or modifies external state requires approval.
-APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows"}
+APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows", "read_project_status"}
 
 TOOLS = [
     {"type": "function", "name": "system_status", "description": "Read local CPU, RAM, battery, and operating system information.",
@@ -35,6 +36,14 @@ TOOLS = [
      "parameters": {"type": "object", "properties": {"when": {"type": "string"}, "message": {"type": "string"}}, "required": ["when", "message"], "additionalProperties": False}},
     {"type": "function", "name": "list_reminders", "description": "List future local reminders.",
      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
+    {"type": "function", "name": "open_project_folder",
+     "description": "Open a user-configured local business project folder in Windows Explorer (no file content is read).",
+     "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
+                    "required": ["name"], "additionalProperties": False}},
+    {"type": "function", "name": "read_project_status",
+     "description": "Read only JARVIS_STATUS.md from an explicitly configured project folder after approval; this is a manually updated status file, NOT live business data.",
+     "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
+                    "required": ["name"], "additionalProperties": False}},
     {"type": "function", "name": "recall_conversation",
      "description": "Search previous local chat messages when the user explicitly asks, after owner approval.",
      "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
@@ -95,6 +104,10 @@ class ToolExecutor:
             return f"Store this note locally?\n\n{str(args.get('note', ''))[:1200]}"
         if name == "set_reminder":
             return f"CREATE LOCAL REMINDER\nWhen: {args.get('when','')}\n{args.get('message','')}"
+        if name == "read_project_status":
+            return ("Read the local JARVIS_STATUS.md file for project '" +
+                    str(args.get("name", ""))[:80] +
+                    "'? Its content may be sent to the chosen AI provider.")
         if name == "lock_windows":
             return "Lock this Windows session now? You will need Windows Hello, a PIN or password to unlock it."
         if name == "recall_conversation":
@@ -214,6 +227,14 @@ class ToolExecutor:
             return {"notes": self.memory.recall(a["query"])}
         if name == "recall_conversation":
             return {"matches": self.memory.search_messages(a["query"])}
+        if name == "open_project_folder":
+            root = project_root(self.config, str(a["name"]))
+            if platform.system() != "Windows":
+                raise OSError("Opening project folders is supported only on Windows")
+            os.startfile(str(root))
+            return {"opened": "project folder", "name": str(a["name"])}
+        if name == "read_project_status":
+            return read_project_status(self.config, str(a["name"]))
         if name == "lock_windows":
             if platform.system() != "Windows":
                 raise OSError("Windows session lock only works on Windows")
