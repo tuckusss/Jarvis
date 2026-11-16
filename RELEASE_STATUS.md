@@ -14,3 +14,6 @@ v0.6.1 changes:
 - New unit tests for streaming and owner authorization. Native Windows audio/hardware and anti-spoofing tests are still required.
 
 The main branch must not be described as ready until GitHub Actions finishes build, package check, install, offline inference, voice synthesis and uninstall tests. Draft installer is unsigned unless a valid publisher signing credential is configured.
+
+## Voice compatibility discovered in CI
+The packaged neural voice synthesized only after the missing phonemizer data was included; then kokoro-onnx 0.5.0 raised ONNX tensor(int32) versus tensor(float) while reading the pinned model-files-v1.1 ONNX model. Bump pinned kokoro-onnx to 0.6.1, which supports the model's speed input type. Validate real audio generation through CI before release.
