@@ -231,6 +231,9 @@ class SettingsDialog(QDialog):
         self.sites = QTextEdit()
         self.sites.setFixedHeight(92)
         self.sites.setPlainText(json.dumps(cfg.sites, indent=2))
+        self.projects = QTextEdit()
+        self.projects.setFixedHeight(78)
+        self.projects.setPlainText(json.dumps(cfg.project_folders, indent=2))
         form.addRow("AI provider", self.provider)
         form.addRow("OpenAI API key (optional)", self.key)
         form.addRow("Cloud model (if used)", self.model)
@@ -257,6 +260,7 @@ class SettingsDialog(QDialog):
         form.addRow("Google OAuth JSON", self.google)
         form.addRow("Google write access", self.write)
         form.addRow("HTTPS bookmarks (JSON)", self.sites)
+        form.addRow("Local project folders (JSON)", self.projects)
         lay.addLayout(form)
         api_actions = QHBoxLayout()
         open_keys = QPushButton("CREATE / FIND API KEY")
@@ -341,6 +345,12 @@ class SettingsDialog(QDialog):
     def apply(self):
         try:
             sites = json.loads(self.sites.toPlainText())
+            project_folders = json.loads(self.projects.toPlainText())
+            if not isinstance(project_folders, dict) or any(
+                    not isinstance(k, str) or not k.strip() or
+                    not isinstance(v, str) or not v.strip()
+                    for k, v in project_folders.items()):
+                raise ValueError("Project folders must be a JSON map of names to paths")
             if not isinstance(sites, dict) or any(not isinstance(k,str) or not isinstance(v,str) for k,v in sites.items()):
                 raise ValueError("Bookmarks must be an object of names to URLs")
             from urllib.parse import urlparse
@@ -351,6 +361,7 @@ class SettingsDialog(QDialog):
             if self.key.text().strip():
                 save_api_key(self.key.text())
             self.cfg.sites = sites
+            self.cfg.project_folders = project_folders
             self.cfg.provider = self.provider.currentData()
             self.cfg.model = self.model.text().strip() or "gpt-5.5"
             self.cfg.voice_enabled = self.voice.isChecked()
@@ -473,6 +484,8 @@ class JarvisWindow(QMainWindow):
             ("MY MEMORIES", "What notes have you remembered about my projects?"),
             ("REMINDERS", "What local reminders do I have scheduled?"),
             ("OPEN NOTEPAD", "Open Notepad on this PC"),
+            ("PAYCORE FOLDER", "Open PayCore project folder"),
+            ("PAYCORE STATUS", "Read PayCore local project status"),
         ]:
             b = QPushButton(title); b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _, x=prompt: self.submit(x))
