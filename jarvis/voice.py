@@ -12,13 +12,15 @@ import numpy as np
 SAMPLE_RATE = 16000
 
 
-def record_phrase(max_seconds=9, stop_after_silence=0.7, start_timeout_s=4.0) -> bytes:
+def record_phrase(max_seconds=9, stop_after_silence=0.7, start_timeout_s=4.0,
+                  device: int | None = None) -> bytes:
     import sounddevice as sd
     audio = []
     started = False
     silent_chunks = 0
     blocksize = 1600  # 0.1 seconds
-    with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=blocksize, dtype="int16", channels=1) as stream:
+    with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=blocksize,
+                           dtype="int16", channels=1, device=device) as stream:
         for index in range(int(max_seconds * SAMPLE_RATE / blocksize)):
             if not started and index * blocksize / SAMPLE_RATE >= start_timeout_s:
                 break
@@ -256,8 +258,10 @@ class WakeListener:
     """Offline wake-word (small Vosk model required). The microphone isn't sent online.
     Uses a narrow grammar; it is not speaker authentication. No privileged action follows without policy checks.
     """
-    def __init__(self, model_path: str, on_wake, on_error):
+    def __init__(self, model_path: str, on_wake, on_error,
+                 device: int | None = None):
         self.model_path = model_path
+        self.device = device
         self.on_wake = on_wake
         self.on_error = on_error
         self.stop_event = threading.Event()
@@ -282,7 +286,8 @@ class WakeListener:
             import sounddevice as sd
             model = _local_vosk_model(self.model_path)
             recognizer = KaldiRecognizer(model, SAMPLE_RATE, json.dumps(["jarvis", "hey jarvis", "[unk]"]))
-            with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=4000, dtype="int16", channels=1) as stream:
+            with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=4000,
+                                   dtype="int16", channels=1, device=self.device) as stream:
                 while not self.stop_event.is_set():
                     chunk, _ = stream.read(4000)
                     if recognizer.AcceptWaveform(bytes(chunk)):
