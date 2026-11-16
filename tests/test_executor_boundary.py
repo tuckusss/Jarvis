@@ -82,3 +82,15 @@ class ExecutorBoundaryTests(TestCase):
                               lambda *_: True, lambda: "screen",
                               owner_gate=OwnerGate(Path(self.tmp.name) / "new_owner.json"))
         self.assertTrue(ungated.execute("remember_note", {"note": "Normal note"})["saved"])
+
+    def test_revoked_while_approval_dialog_open_cannot_execute(self):
+        self.assertTrue(self.gate.unlock(PHRASE))
+        token = self.gate.issue_command_token()
+        def revoke_while_approving(name, detail):
+            self.gate.lock()
+            return True
+        self.exec.approve = revoke_while_approving
+        with self.exec.authorised_request(token):
+            result = self.exec.execute("remember_note", {"note": "Must not be saved"})
+        self.assertIn("locked", result["error"])
+        self.assertEqual(self.memory.recall(), [])
