@@ -16,6 +16,7 @@ import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from .request_control import check_cancelled, RequestCancelled
 
 MODEL_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 MODEL_ALIAS = "jarvis-local"
@@ -56,6 +57,17 @@ class LocalRuntime:
         self._token = ""
         self._port = 0
         self._client = None
+        self._launch_count = 0
+
+    def status_snapshot(self) -> dict:
+        """Non-blocking local process health for the dashboard; never starts AI."""
+        proc = self.proc
+        state = ("not started" if self._launch_count == 0 else "stopped")
+        if proc is not None:
+            state = "running" if proc.poll() is None else "exited; recovers on next request"
+        return {"state": state, "launches": self._launch_count,
+                "recoveries": max(0, self._launch_count - 1),
+                "loopback_only": True}
 
     def available(self) -> bool:
         return has_local_bundle()
@@ -73,8 +85,10 @@ class LocalRuntime:
         except (HTTPError, URLError, TimeoutError, OSError):
             return False
 
-    def client(self):
+    def client(self, cancel_event=None):
+        check_cancelled(cancel_event)
         with self._lock:
+            check_cancelled(cancel_event)
             if self._client is not None and self._healthy():
                 return self._client
             self.stop()
@@ -101,12 +115,23 @@ class LocalRuntime:
                 kwargs["creationflags"] = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
                                            | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
             self.proc = self._popen(args, **kwargs)
+            self._launch_count += 1
             until = time.monotonic() + self.timeout
             while time.monotonic() < until:
+                try:
+                    check_cancelled(cancel_event)
+                except RequestCancelled:
+                    self.stop()
+                    raise
                 if self.proc.poll() is not None:
                     self.stop()
                     raise RuntimeError("Local AI process exited during startup. Verify CPU compatibility.")
                 if self._healthy():
+                    try:
+                        check_cancelled(cancel_event)
+                    except RequestCancelled:
+                        self.stop()
+                        raise
                     from openai import OpenAI
                     self._client = OpenAI(
                         base_url=f"http://127.0.0.1:{self._port}/v1",

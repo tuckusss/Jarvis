@@ -12,37 +12,54 @@ import numpy as np
 SAMPLE_RATE = 16000
 
 
-def record_phrase(max_seconds=9, stop_after_silence=0.7, start_timeout_s=4.0,
-                  device: int | None = None) -> bytes:
+def record_phrase(max_seconds=9, stop_after_silence=0.65, start_timeout_s=4.0,
+                  device: int | None = None, cancel_event=None) -> bytes:
+    """Capture a single utterance with calibrated ambient noise and a pre-roll.
+
+    Energy detection is a lightweight privacy-preserving endpoint, not speaker
+    identity or neural VAD. Audio stays local unless cloud transcription was
+    explicitly configured. Cancellation stops reading within one audio frame.
+    """
+    from collections import deque
+    from .endpointing import SpeechEndpoint
+    from .request_control import check_cancelled
     import sounddevice as sd
-    audio = []
-    started = False
-    silent_chunks = 0
-    blocksize = 1600  # 0.1 seconds
+    blocksize = 1600  # 100ms @ 16 kHz
+    boundary = SpeechEndpoint(frame_seconds=blocksize / SAMPLE_RATE,
+                              trailing_silence=stop_after_silence)
+    pre_roll = deque(maxlen=7)  # retain ambient calibration and first phonemes
+    audio: list[bytes] = []
+    check_cancelled(cancel_event)
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=blocksize,
                            dtype="int16", channels=1, device=device) as stream:
         for index in range(int(max_seconds * SAMPLE_RATE / blocksize)):
-            if not started and index * blocksize / SAMPLE_RATE >= start_timeout_s:
+            check_cancelled(cancel_event)
+            if not boundary.started and index * blocksize / SAMPLE_RATE >= start_timeout_s:
                 break
-            chunk, overflowed = stream.read(blocksize)
-            b = bytes(chunk)
-            audio.append(b)
-            arr = np.frombuffer(b, dtype=np.int16).astype(np.float32)
-            rms = float(np.sqrt(np.mean(arr * arr)))
-            if rms > 380:
-                started = True
-                silent_chunks = 0
-            elif started:
-                silent_chunks += 1
-            if started and silent_chunks >= int(stop_after_silence * SAMPLE_RATE / blocksize):
+            chunk, _overflow = stream.read(blocksize)
+            check_cancelled(cancel_event)
+            block = bytes(chunk)
+            samples = np.frombuffer(block, dtype=np.int16).astype(np.float32)
+            rms = float(np.sqrt(np.mean(samples * samples)))
+            just_started, finished = boundary.observe(rms)
+            if just_started:
+                audio.extend(pre_roll)
+                pre_roll.clear()
+                audio.append(block)
+            elif boundary.started:
+                audio.append(block)
+            else:
+                pre_roll.append(block)
+            if finished:
                 break
-    out = io.BytesIO()
-    with wave.open(out, "wb") as wav:
+    check_cancelled(cancel_event)
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(SAMPLE_RATE)
         wav.writeframes(b"".join(audio))
-    return out.getvalue()
+    return output.getvalue()
 
 
 def transcribe(wav_bytes: bytes, openai_client, model: str) -> str:

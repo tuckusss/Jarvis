@@ -8,6 +8,7 @@ from datetime import datetime
 from .config import api_key
 from .tools import TOOLS
 from .local_ai import LocalRuntime, MODEL_ALIAS
+from .request_control import RequestCancelled, check_cancelled
 
 PERSONA = """You are JARVIS, a precise, tactful Windows personal assistant. Speak concisely.
 You have only the tools defined in this session. Never claim an action succeeded unless its tool confirms it.
@@ -52,33 +53,38 @@ class Agent:
         )
         return reply.output_text or "No screen description available"
 
-    def ask(self, text: str) -> str:
+    def ask(self, text: str, cancel_event=None) -> str:
+        check_cancelled(cancel_event)
         if not text.strip():
             return ""
         if self.client is not None:  # Supports deterministic injected test clients.
-            return self._ask_cloud(text)
+            return self._ask_cloud(text, cancel_event=cancel_event)
         mode = getattr(self.config, "provider", "local")
         if mode not in {"local", "hybrid", "openai"}:
             raise ValueError("Invalid AI provider; select local, hybrid or openai in Settings")
         if mode == "openai":
-            return self._ask_cloud(text)
+            return self._ask_cloud(text, cancel_event=cancel_event)
         try:
-            return self._ask_local(text)
+            return self._ask_local(text, cancel_event=cancel_event)
+        except RequestCancelled:
+            raise
         except Exception as local_error:
+            check_cancelled(cancel_event)
             if mode == "hybrid" and api_key():
-                return self._ask_cloud(text)
+                return self._ask_cloud(text, cancel_event=cancel_event)
             raise RuntimeError("Offline AI unavailable: " + str(local_error)[:250]) from local_error
 
-    def ask_stream(self, text: str, on_sentence) -> str:
+    def ask_stream(self, text: str, on_sentence, cancel_event=None) -> str:
         """Stream ordinary offline chat into speech before the full response ends.
 
         Existing tool paths and cloud calls still go through ask(), so this
         cannot make an unapproved action via streamed content.
         """
+        check_cancelled(cancel_event)
         if (not text.strip() or self.client is not None or
                 getattr(self.config, "provider", "local") != "local" or
                 not callable(on_sentence)):
-            return self.ask(text)
+            return self.ask(text, cancel_event=cancel_event) if cancel_event is not None else self.ask(text)
         # Route any potentially actionable request through the audited tool
         # executor rather than an untrusted text-only streamed shortcut.
         if re.search(
@@ -88,9 +94,9 @@ class Agent:
             r"download|save|change|update|move|copy|shutdown|restart)\b",
             text, flags=re.I,
         ):
-            return self.ask(text)
+            return self.ask(text, cancel_event=cancel_event) if cancel_event is not None else self.ask(text)
         from .streaming import SentenceBuffer
-        client = self.local_runtime.client()
+        client = self.local_runtime.client(cancel_event=cancel_event)
         recent = self.memory.recent(6) if self.config.save_history else []
         messages = [
             {"role": "system", "content": PERSONA +
@@ -104,18 +110,27 @@ class Agent:
         )
         complete = ""
         buffer = SentenceBuffer()
-        for event in events:
-            choices = getattr(event, "choices", []) or []
-            if not choices:
-                continue
-            delta = getattr(getattr(choices[0], "delta", None), "content", None)
-            if not isinstance(delta, str) or not delta:
-                continue
-            complete += delta
-            for segment in buffer.feed(delta):
+        try:
+            for event in events:
+                check_cancelled(cancel_event)
+                choices = getattr(event, "choices", []) or []
+                if not choices:
+                    continue
+                delta = getattr(getattr(choices[0], "delta", None), "content", None)
+                if not isinstance(delta, str) or not delta:
+                    continue
+                complete += delta
+                for segment in buffer.feed(delta):
+                    check_cancelled(cancel_event)
+                    on_sentence(segment)
+            for segment in buffer.flush():
+                check_cancelled(cancel_event)
                 on_sentence(segment)
-        for segment in buffer.flush():
-            on_sentence(segment)
+        finally:
+            close = getattr(events, "close", None)
+            if callable(close):
+                close()
+        check_cancelled(cancel_event)
         complete = complete.strip()
         if not complete:
             raise RuntimeError("Local AI returned an empty streaming response")
@@ -124,17 +139,19 @@ class Agent:
             self.memory.message("assistant", complete)
         return complete
 
-    def _ask_local(self, text: str) -> str:
+    def _ask_local(self, text: str, cancel_event=None) -> str:
         """OpenAI-compatible llama.cpp chat endpoint with bounded, allowlisted tools."""
         from .tools import local_command
+        check_cancelled(cancel_event)
         shortcut = local_command(text, self.executor)
         if shortcut is not None:
+            check_cancelled(cancel_event)
             result = shortcut
             if self.config.save_history:
                 self.memory.message("user", text)
                 self.memory.message("assistant", result)
             return result
-        client = self.local_runtime.client()
+        client = self.local_runtime.client(cancel_event=cancel_event)
         recent = self.memory.recent(6) if self.config.save_history else []
         messages = [{"role": "system", "content": PERSONA + "\n"
                      "You are running entirely offline on a small local model; be brief, "
@@ -154,6 +171,7 @@ class Agent:
         ))
         final = ""
         for _ in range(4 if wants_tools else 1):
+            check_cancelled(cancel_event)
             request = dict(model=MODEL_ALIAS, messages=messages, temperature=0.2,
                            max_tokens=240 if wants_tools else 150, stream=False)
             if wants_tools:
@@ -166,6 +184,7 @@ class Agent:
                 request.pop("tools", None)
                 request.pop("tool_choice", None)
                 response = client.chat.completions.create(**request)
+            check_cancelled(cancel_event)
             message = response.choices[0].message
             calls = (message.tool_calls or [])[:3]
             if not calls:
@@ -176,6 +195,7 @@ class Agent:
                                 "function": {"name": c.function.name,
                                              "arguments": c.function.arguments}} for c in calls]})
             for call in calls:
+                check_cancelled(cancel_event)
                 try:
                     args = json.loads(call.function.arguments or "{}")
                     if not isinstance(args, dict):
@@ -187,6 +207,7 @@ class Agent:
                                  "content": json.dumps(result, default=str)[:10000]})
         else:
             final = "Action limit reached. Please give me one task at a time."
+        check_cancelled(cancel_event)
         if self.config.save_history:
             self.memory.message("user", text)
             self.memory.message("assistant", final)
@@ -195,7 +216,8 @@ class Agent:
     def close(self):
         self.local_runtime.stop()
 
-    def _ask_cloud(self, text: str) -> str:
+    def _ask_cloud(self, text: str, cancel_event=None) -> str:
+        check_cancelled(cancel_event)
         if not text.strip():
             return ""
         client = self._client()
@@ -203,17 +225,20 @@ class Agent:
         items: list = [*recent, {"role": "user", "content": text[:10000]}]
         final_text = ""
         for _ in range(5):
+            check_cancelled(cancel_event)
             response = client.responses.create(
                 model=self.config.model, instructions=PERSONA + f"\nLocal date/time: {datetime.now().astimezone().isoformat()}",
                 input=items, tools=TOOLS, tool_choice="auto", parallel_tool_calls=False,
                 store=False, max_output_tokens=1300,
             )
+            check_cancelled(cancel_event)
             calls = [o for o in response.output if getattr(o, "type", "") == "function_call"]
             if not calls:
                 final_text = response.output_text or "I couldn't produce a response."
                 break
             items.extend(response.output)
             for call in calls:
+                check_cancelled(cancel_event)
                 try:
                     args = json.loads(call.arguments)
                     if not isinstance(args, dict):
@@ -226,6 +251,7 @@ class Agent:
                               "output": json.dumps(result, ensure_ascii=False, default=str)[:70000]})
         else:
             final_text = "I reached the action limit for this request. Please continue with a narrower task."
+        check_cancelled(cancel_event)
         if self.config.save_history:
             self.memory.message("user", text)
             self.memory.message("assistant", final_text)

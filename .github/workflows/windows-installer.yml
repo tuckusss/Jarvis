@@ -3,7 +3,7 @@ name: Build, install-test and stage JARVIS Windows Setup
 on:
   workflow_dispatch:
   push:
-    branches: [main, jarvis-v070-core]
+    branches: [main, jarvis-v080-conversation-recovery]
 
 # Draft releases are deliberately not public distribution. A human must complete
 # microphone, Smart App Control and security validation and provide trusted signing.
@@ -63,16 +63,16 @@ jobs:
         env:
           JARVIS_SIGNING_PFX_BASE64: ${{ secrets.JARVIS_SIGNING_PFX_BASE64 }}
           JARVIS_SIGNING_PASSWORD: ${{ secrets.JARVIS_SIGNING_PASSWORD }}
-        run: .\packaging\build_installer.ps1 -SkipDependencyInstall -Version '0.7.0'
+        run: .\packaging\build_installer.ps1 -SkipDependencyInstall -Version '0.8.0'
 
       - name: Install the actual setup and verify local inference and uninstallation
         shell: pwsh
-        run: .\packaging\smoke_install.ps1 -Installer '.\dist\JARVIS-Setup-0.7.0-x64.exe'
+        run: .\packaging\smoke_install.ps1 -Installer '.\dist\JARVIS-Setup-0.8.0-x64.exe'
 
       - name: Verify completed setup EXE and record SHA256
         shell: pwsh
         run: |
-          $file = (Resolve-Path '.\dist\JARVIS-Setup-0.7.0-x64.exe').Path
+          $file = (Resolve-Path '.\dist\JARVIS-Setup-0.8.0-x64.exe').Path
           $size = (Get-Item $file).Length
           if ($size -lt 500000000) { throw 'Setup unexpectedly small; bundled models likely missing' }
           if ($size -ge 2147483648) { throw 'Setup exceeds GitHub Release 2GiB-per-file maximum' }
@@ -90,7 +90,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "jarvis-ci-${{ github.run_id }}-${{ github.run_attempt }}"
-          gh release create $tag '.\dist\JARVIS-Setup-0.7.0-x64.exe' `
-            --title "JARVIS v0.7.0 Windows build candidate ${{ github.run_number }}" `
-            --notes "Installed setup, imported dependencies, ran offline model inference and neural voice synthesis, and uninstalled successfully on Windows CI. THIS IS A DRAFT CANDIDATE, NOT A SIGNED/RELEASED PRODUCT. Additional registered-speaker, acoustic, GPU, Windows secure sign-in and Smart App Control tests and trusted code signing are required before public distribution." `
+          gh release create $tag '.\dist\JARVIS-Setup-0.8.0-x64.exe' `
+            --title "JARVIS v0.8.0 Windows build candidate ${{ github.run_number }}" `
+            --notes "Installed setup, imported dependencies, ran offline model inference and neural voice synthesis, and uninstalled successfully on Windows CI. THIS IS A DRAFT CANDIDATE, NOT A SIGNED/RELEASED PRODUCT. Additional acoustic and speech-endpoint, secure crash recovery, registered-speaker, GPU and Windows secure sign-in and Smart App Control tests and trusted code signing are required before public distribution." `
             --draft --prerelease --target '${{ github.sha }}'

@@ -26,6 +26,8 @@ from .owner_auth import OwnerGate
 from .gaming import GamingState, installed_game_running
 from .audio_devices import input_devices, microphone_probe
 from .updates import check_official_release
+from .request_control import RequestCancelled, check_cancelled
+from .recovery import register_windows_restart
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
 from .neural_voice import VOICE_CHOICES, neural_available
@@ -218,6 +220,8 @@ class SettingsDialog(QDialog):
         self.microphones.setCurrentIndex(max(0, selected_mic))
         self.microphone_test = QPushButton("TEST SELECTED MICROPHONE")
         self.microphone_test.clicked.connect(self._test_microphone)
+        self.recovery_enabled = QCheckBox("Allow Windows to offer recovery after a crash")
+        self.recovery_enabled.setChecked(cfg.crash_restart_enabled)
         self.gaming_enabled = QCheckBox("Automatically detect Crusader Kings III / Warband")
         self.gaming_enabled.setChecked(cfg.gaming_mode_enabled)
         self.gaming_pause_wake = QCheckBox("Pause wake listening while gaming")
@@ -247,6 +251,7 @@ class SettingsDialog(QDialog):
         form.addRow("Wake listener", self.wake)
         form.addRow("Input microphone", self.microphones)
         form.addRow("Microphone diagnostics", self.microphone_test)
+        form.addRow("Crash recovery", self.recovery_enabled)
         form.addRow("Gaming focus", self.gaming_enabled)
         form.addRow("Gaming microphone", self.gaming_pause_wake)
         form.addRow("Gaming speech", self.gaming_mute_speech)
@@ -295,7 +300,7 @@ class SettingsDialog(QDialog):
     def _check_updates(self):
         self.check_updates_button.setEnabled(False)
         self.check_updates_button.setText("CHECKING OFFICIAL RELEASES…")
-        self._update_task = Task(lambda: check_official_release("0.7.0"))
+        self._update_task = Task(lambda: check_official_release("0.8.0"))
         self._update_task.signals.done.connect(self._update_result)
         self._update_task.signals.failed.connect(self._update_error)
         QThreadPool.globalInstance().start(self._update_task)
@@ -423,6 +428,7 @@ class SettingsDialog(QDialog):
             self.cfg.wake_enabled = self.wake.isChecked()
             self.cfg.microphone_device = self.microphones.currentData()
             self.cfg.gaming_mode_enabled = self.gaming_enabled.isChecked()
+            self.cfg.crash_restart_enabled = self.recovery_enabled.isChecked()
             self.cfg.gaming_pause_wake = self.gaming_pause_wake.isChecked()
             self.cfg.gaming_mute_speech = self.gaming_mute_speech.isChecked()
             # Vosk model path is discovered automatically from bundled files or app data.
@@ -469,6 +475,8 @@ class JarvisWindow(QMainWindow):
         self._installing_wake_model = False
         self._busy = False
         self._quitting = False
+        self._request_cancel = None
+        self._request_capability = None
         self._request_started = 0.0
         self._first_audio_latency = 0.0
         self.agent = None
@@ -565,6 +573,10 @@ class JarvisWindow(QMainWindow):
         self.stop_voice_button = QPushButton("STOP SPEAKING")
         self.stop_voice_button.clicked.connect(self.stop_speaking)
         controls.addWidget(self.stop_voice_button)
+        self.cancel_task_button = QPushButton("CANCEL REQUEST")
+        self.cancel_task_button.clicked.connect(self.cancel_request)
+        self.cancel_task_button.setEnabled(False)
+        controls.addWidget(self.cancel_task_button)
         self.voice_button = QPushButton("VOICE  ON" if self.config.voice_enabled else "VOICE  OFF")
         self.voice_button.clicked.connect(self.toggle_voice)
         controls.addWidget(self.voice_button)
@@ -586,7 +598,8 @@ class JarvisWindow(QMainWindow):
         self.google_status = muted("GOOGLE: OPTIONAL")
         self.mic_status = muted("MICROPHONE: OFF")
         self.game_status = muted("GAMING: NORMAL")
-        for widget in (self.api_status, self.google_status, self.mic_status, self.game_status):
+        self.local_health = muted("LOCAL AI: NOT STARTED")
+        for widget in (self.api_status, self.google_status, self.mic_status, self.game_status, self.local_health):
             right_l.addWidget(widget)
         right_l.addStretch()
         connect = QPushButton("CONNECT GOOGLE")
@@ -628,6 +641,7 @@ class JarvisWindow(QMainWindow):
         self.orb.active = busy
         self.listen.setEnabled(not busy)
         self.send_button.setEnabled(not busy)
+        self.cancel_task_button.setEnabled(busy)
         self.state.setText(message)
         if not busy and self.config.wake_enabled and not self._speaking:
             self._start_wake()
@@ -665,19 +679,22 @@ class JarvisWindow(QMainWindow):
         self._first_audio_latency = 0.0
         self._streamed_speech = False
         self._speech_muted = False
+        self._request_cancel = threading.Event()
+        self._request_capability = capability
         self._set_busy(True, "REASONING / PROCESSING REQUEST")
         self._run_task(
-            lambda: self._execute_owner_request(text, capability),
+            lambda: self._execute_owner_request(text, capability, self._request_cancel),
             self._answer, self._fail_answer,
         )
 
-    def _execute_owner_request(self, text: str, capability: str | None):
+    def _execute_owner_request(self, text: str, capability: str | None, cancel_event):
         # Thread-local capability is valid only inside this task, not globally
         # and not for requests started by other applications or speakers.
         try:
-            with self.executor.authorised_request(capability):
+            with self.executor.authorised_request(capability, cancel_event=cancel_event):
                 return self.agent.ask_stream(
-                    text, lambda chunk: self.bridge.speech_sentence.emit(chunk)
+                    text, lambda chunk: self.bridge.speech_sentence.emit(chunk),
+                    cancel_event=cancel_event,
                 )
         finally:
             self.owner_gate.revoke_command_token(capability)
@@ -694,6 +711,8 @@ class JarvisWindow(QMainWindow):
 
     @Slot(str)
     def _on_stream_sentence(self, sentence: str):
+        if self._request_cancel is not None and self._request_cancel.is_set():
+            return
         if (not self.config.voice_enabled or self._speech_muted or not sentence.strip()
                 or (self.game_state.active and self.config.gaming_mute_speech)):
             return
@@ -712,6 +731,24 @@ class JarvisWindow(QMainWindow):
         else:
             self.speaker.enqueue(sentence)
 
+    def cancel_request(self):
+        """Cancel model generation and pending actions, not only speech output."""
+        if not self._busy or self._request_cancel is None:
+            return
+        self._request_cancel.set()
+        self.owner_gate.revoke_command_token(self._request_capability)
+        self.stop_speaking()
+        self.state.setText("CANCELLING  /  WAITING FOR WORKER")
+        self.cancel_task_button.setEnabled(False)
+
+    def _finish_cancelled(self):
+        self.speaker.interrupt()
+        self._speaking = False
+        self._request_cancel = None
+        self._request_capability = None
+        self._append("SYSTEM", "Request cancelled. Actions already completed cannot be undone.")
+        self._set_busy(False)
+
     def stop_speaking(self):
         """Stop speaking immediately without cancelling an in-flight safe reply."""
         self._speech_muted = True
@@ -721,6 +758,11 @@ class JarvisWindow(QMainWindow):
             self._start_wake()
 
     def _answer(self, answer):
+        if self._request_cancel is not None and self._request_cancel.is_set():
+            self._finish_cancelled()
+            return
+        self._request_cancel = None
+        self._request_capability = None
         if self._request_started:
             elapsed = time.monotonic() - self._request_started
             self.response_speed.setText(f"ANSWER   {elapsed:.1f} s")
@@ -732,6 +774,11 @@ class JarvisWindow(QMainWindow):
         self._set_busy(False)
 
     def _fail_answer(self, err):
+        if (self._request_cancel is not None and self._request_cancel.is_set()) or "RequestCancelled" in str(err):
+            self._finish_cancelled()
+            return
+        self._request_cancel = None
+        self._request_capability = None
         if self._request_started:
             elapsed = time.monotonic() - self._request_started
             self.response_speed.setText(f"FAILED   {elapsed:.1f} s")
@@ -747,10 +794,15 @@ class JarvisWindow(QMainWindow):
             self.stop_speaking()
         if self.wake_listener:
             self.wake_listener.stop()
+        capture_cancel = threading.Event()
+        self._request_cancel = capture_cancel
+        self._request_capability = None
         self._set_busy(True, "MICROPHONE ACTIVE / SPEAK NOW")
         self.mic_status.setText("MICROPHONE: RECORDING")
         def capture_and_transcribe():
-            wav = record_phrase(device=self.config.microphone_device)
+            wav = record_phrase(device=self.config.microphone_device,
+                                cancel_event=capture_cancel)
+            check_cancelled(capture_cancel)
             if self.config.provider == "openai":
                 return transcribe(wav, self.agent._client(), self.config.transcription_model)
             wake_model = resolve_model(self.config.wake_model_path)
@@ -766,6 +818,10 @@ class JarvisWindow(QMainWindow):
 
     def _transcribed(self, text):
         self.mic_status.setText("MICROPHONE: OFF")
+        if self._request_cancel is not None and self._request_cancel.is_set():
+            self._finish_cancelled()
+            return
+        self._request_cancel = None
         # Do not restart the wake microphone between a transcript and its dispatch.
         if text.strip():
             self._busy = False
@@ -776,6 +832,10 @@ class JarvisWindow(QMainWindow):
 
     def _listen_error(self, err):
         self.mic_status.setText("MICROPHONE: OFF")
+        if self._request_cancel is not None and self._request_cancel.is_set():
+            self._finish_cancelled()
+            return
+        self._request_cancel = None
         self._append("SYSTEM", "Voice error: " + err)
         self._set_busy(False)
 
@@ -1045,6 +1105,9 @@ class JarvisWindow(QMainWindow):
 
     def _refresh_stats(self):
         self._sync_owner_visibility()
+        health = self.agent.local_runtime.status_snapshot()
+        self.local_health.setText("LOCAL AI: " + health["state"].upper() +
+                                  " · LOADS " + str(health["launches"]))
         try:
             import psutil
             self.cpu.setText(f"CPU   {psutil.cpu_percent():.0f} %")
@@ -1075,6 +1138,7 @@ class JarvisWindow(QMainWindow):
         menu.addAction("Open JARVIS", self._show)
         menu.addAction("Listen", self._show_and_listen)
         menu.addAction("Stop speaking", self.stop_speaking)
+        menu.addAction("Cancel current request", self.cancel_request)
         menu.addAction("Lock JARVIS owner access", self.lock_owner_access)
         self.mic_menu_action = menu.addAction("Mute wake microphone", self._toggle_wake_microphone)
         self._sync_mic_action()
@@ -1146,6 +1210,9 @@ def run():
                                 "Open it from the JARVIS tray icon.")
         return
     window = JarvisWindow()
+    restart = register_windows_restart(window.config.crash_restart_enabled)
+    if window.config.crash_restart_enabled and not restart.registered and sys.platform == "win32":
+        window._append("SYSTEM", "Windows crash recovery could not be registered.")
     window.show()
     try:
         sys.exit(app.exec())
