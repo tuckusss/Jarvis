@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QIcon, QPixmap,
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
+    QInputDialog,
     QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSystemTrayIcon,
     QTextEdit, QVBoxLayout, QWidget,
 )
@@ -20,6 +21,7 @@ from .agent import Agent
 from .config import Config, api_key, save_api_key, data_dir
 from .google_connector import GoogleConnector
 from .memory import Memory
+from .owner_auth import OwnerGate
 from .tools import ToolExecutor
 from .voice import Speaker, WakeListener, record_phrase, transcribe, transcribe_local
 from .neural_voice import VOICE_CHOICES, neural_available
@@ -334,6 +336,7 @@ class JarvisWindow(QMainWindow):
         self.bridge.speech_sentence.connect(self._on_stream_sentence)
         self.bridge.speech_error.connect(self._notice)
         self.config = Config.load()
+        self.owner_gate = OwnerGate()
         self.memory = Memory()
         self.google = GoogleConnector(self.config)
         self.speaker = Speaker(
@@ -386,6 +389,9 @@ class JarvisWindow(QMainWindow):
         settings = QPushButton("⚙  SETTINGS")
         settings.clicked.connect(self.settings)
         header.addWidget(settings)
+        owner = QPushButton("OWNER ACCESS")
+        owner.clicked.connect(self.manage_owner_access)
+        header.addWidget(owner)
         root.addLayout(header)
         line = QFrame(); line.setFixedHeight(2); line.setStyleSheet("background: #11445c; border: 0;")
         root.addWidget(line)
@@ -507,10 +513,20 @@ class JarvisWindow(QMainWindow):
         self.pool.start(task)
         # The signals are QObject-owned and connected until the task finishes.
 
-    def submit(self, text: str):
+    def submit(self, text: str, from_voice: bool = False):
         text = text.strip()
         if self._busy or not text:
             return
+        if self.owner_gate.enrolled and not self.owner_gate.authorised(voice_command=from_voice):
+            label = ("Voice commands require owner confirmation on this Windows session."
+                     if from_voice else "Enter your owner passphrase to access JARVIS.")
+            phrase, ok = QInputDialog.getText(
+                self, "JARVIS / OWNER VERIFICATION", label, QLineEdit.Password
+            )
+            if not ok or not self.owner_gate.unlock(phrase, voice_command=from_voice):
+                self._notice("Owner authorisation denied. No command was executed.")
+                self._set_busy(False)
+                return
         if self.wake_listener:
             self.wake_listener.stop()
         self.entry.clear()
@@ -590,7 +606,7 @@ class JarvisWindow(QMainWindow):
         # Do not restart the wake microphone between a transcript and its dispatch.
         if text.strip():
             self._busy = False
-            self.submit(text)
+            self.submit(text, from_voice=True)
         else:
             self._append("SYSTEM", "No speech detected")
             self._set_busy(False)
@@ -642,6 +658,63 @@ class JarvisWindow(QMainWindow):
         self._speaking = False
         if not self._busy and self.config.wake_enabled:
             self._start_wake()
+
+    def manage_owner_access(self):
+        """Opt-in owner passphrase gate; NOT voice biometrics or Windows sign-in."""
+        if not self.owner_gate.enrolled:
+            consent = QMessageBox.question(
+                self, "JARVIS / OWNER LOCK",
+                "Create a JARVIS-only owner passphrase?\n\n"
+                "This blocks unapproved JARVIS commands, but does not unlock or "
+                "replace Windows sign-in. Voice commands will request the "
+                "passphrase until separate speaker verification is developed.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if consent != QMessageBox.Yes:
+                return
+            phrase, ok = QInputDialog.getText(
+                self, "Create owner passphrase",
+                "Enter a unique passphrase of at least 12 characters:",
+                QLineEdit.Password,
+            )
+            if not ok:
+                return
+            second, ok = QInputDialog.getText(
+                self, "Confirm owner passphrase",
+                "Re-enter the owner passphrase:", QLineEdit.Password,
+            )
+            if not ok or phrase != second:
+                self._notice("Owner passphrase confirmation did not match.")
+                return
+            try:
+                self.owner_gate.enrol(phrase)
+                self._notice("Owner gate enabled. JARVIS commands now require confirmation.")
+            except (ValueError, PermissionError, OSError) as exc:
+                self._notice("Owner gate setup failed: " + str(exc))
+            return
+        phrase, ok = QInputDialog.getText(
+            self, "JARVIS / OWNER LOCK",
+            "Enter the current owner passphrase:", QLineEdit.Password,
+        )
+        if not ok or not self.owner_gate.unlock(phrase):
+            self._notice("Owner verification denied.")
+            return
+        result = QMessageBox.question(
+            self, "JARVIS / OWNER LOCK",
+            "Owner verified.\n\nDisable the JARVIS-only passphrase gate? "
+            "Choose No to leave it enabled and unlocked for five minutes.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if result == QMessageBox.Yes:
+            self.owner_gate.disable()
+            self._notice("JARVIS owner gate disabled.")
+        else:
+            self._notice("JARVIS owner gate unlocked for five minutes.")
+
+    def lock_owner_access(self):
+        self.owner_gate.lock()
+        self.stop_speaking()
+        self._notice("JARVIS owner access locked.")
 
     def settings(self):
         dlg = SettingsDialog(self.config, self)
@@ -733,7 +806,7 @@ class JarvisWindow(QMainWindow):
                 self._append("SYSTEM", "REMINDER: " + message)
                 if self.tray:
                     self.tray.showMessage("JARVIS REMINDER", message[:200], QSystemTrayIcon.Information, 10000)
-                if self.config.voice_enabled:
+                if self.config.voice_enabled and self.owner_gate.authorised():
                     self._say("Reminder. " + message)
         except Exception as exc:
             self._append("SYSTEM", "Reminder check failed: " + str(exc))
@@ -769,6 +842,7 @@ class JarvisWindow(QMainWindow):
         menu.addAction("Open JARVIS", self._show)
         menu.addAction("Listen", self._show_and_listen)
         menu.addAction("Stop speaking", self.stop_speaking)
+        menu.addAction("Lock JARVIS owner access", self.lock_owner_access)
         self.mic_menu_action = menu.addAction("Mute wake microphone", self._toggle_wake_microphone)
         self._sync_mic_action()
         menu.addSeparator()
