@@ -277,6 +277,24 @@ def local_command(text: str, executor: ToolExecutor) -> str | None:
             return _format_local_result(executor.execute("open_site", {"site": name}))
     if re.fullmatch(r"(?:check|show|what is|what's|tell me)\s+(?:my\s+)?(?:pc|computer|system)(?:\s+(?:health|status))?[.!]?", utterance):
         return _format_local_result(executor.execute("system_status", {}))
+    project_folder = re.fullmatch(
+        r"(?:open|show)\s+(?:my\s+)?(.+?)\s+(?:project\s+)?folder[.!]?",
+        utterance,
+    )
+    if project_folder:
+        result = executor.execute("open_project_folder", {
+            "name": project_folder.group(1)
+        })
+        return _format_local_result(result)
+    project_status = re.fullmatch(
+        r"(?:show|read|check)\s+(?:my\s+)?(.+?)\s+(?:local\s+)?project\s+status[.!]?",
+        utterance,
+    )
+    if project_status:
+        result = executor.execute("read_project_status", {
+            "name": project_status.group(1)
+        })
+        return _format_local_result(result)
     if re.fullmatch(r"(?:list|show|what are)\s+(?:my\s+)?reminders[.!]?", utterance):
         return _format_local_result(executor.execute("list_reminders", {}))
     m = re.fullmatch(r"(?:search|find)\s+(?:my\s+)?files\s+(?:for|named)\s+(.+)", utterance)
@@ -295,6 +313,8 @@ def _format_local_result(result: dict) -> str:
         return "Opened " + str(result["opened"]) + "."
     if "saved" in result:
         return "Saved to local memory."
+    if result.get("source") == "JARVIS_STATUS.md":
+        return "Local status from " + str(result["project"]) + ":\n" + str(result["content"])[:4000]
     if "files" in result:
         return "Matching files: " + (", ".join(result["files"][:20]) or "none found")
     if "reminders" in result:
