@@ -70,6 +70,7 @@ if (-not (Test-Path $exe)) {
 Write-Host "JARVIS Desktop installed successfully."
 
 Invoke-Checked $exe @('--package-check') 'Installed package integrity check' 180
+Invoke-Checked $exe @('--gui-smoke-check') 'Installed Settings UI offscreen smoke check' 180
 Invoke-Checked $exe @('--offline-voice-check') 'Installed neural TTS synthesis check' 240
 Invoke-Checked $exe @('--offline-inference-check') 'Installed offline inference check' 360
 
