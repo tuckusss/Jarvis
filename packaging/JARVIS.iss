@@ -3,7 +3,7 @@
 #if GetEnv("JARVIS_VERSION") != ""
   #define JARVIS_VERSION GetEnv("JARVIS_VERSION")
 #else
-  #define JARVIS_VERSION "0.9.0"
+  #define JARVIS_VERSION "1.0.0"
 #endif
 #define AppName "JARVIS Desktop"
 #define AppExe "JarvisDesktop.exe"

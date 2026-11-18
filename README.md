@@ -1,4 +1,4 @@
-# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.9.0)
+# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v1.0.0)
 
 **Distribution target:** One Windows 10/11 x64 setup EXE, containing the complete desktop application, Python runtime, offline speech model, CPU inference engine, and offline language model. End users need **neither Python, Ollama, PowerShell, model folders, nor an OpenAI API key**. This repository/ZIP is a **build project**, not the finished EXE; no signed Windows installer has been compiled or hardware-tested in this Linux build environment.
 
@@ -219,3 +219,40 @@ actual DPAPI private-vault roundtrip, offline neural speech and local AI
 inference, installation and uninstallation tests before it is considered
 a validated build candidate. Trusted signing and physical voice tests
 remain outstanding.
+
+
+## v1.0 development candidate — private history and signed-release gates
+
+v0.9 Windows build #25 passed. v1.0 is a separate release candidate and
+must pass its own full installer and real-device tests.
+
+Enable Encrypted history in Settings to protect NEW chats, local notes and
+reminder messages under the current Windows profile using DPAPI. Fully quit
+and reopen JARVIS for the mode switch. If Windows encryption cannot start,
+JARVIS fails closed instead of silently recording in plaintext.
+
+MIGRATE HISTORY is an owner-approved, one-time transactional copy of
+historical records into this separate secure-history database. Existing
+jarvis.db, WAL files, crash dumps and external backups are NOT automatically
+deleted or sanitised, and may retain sensitive plaintext. The legacy
+database remains as a recovery source. Neither the secure-history database
+nor its DPAPI ciphertext is portable to arbitrary Windows user accounts.
+Role, timestamp and due-date metadata are not encrypted. Search currently
+scans up to the 10,000 newest encrypted entries in memory.
+
+No automatic installation of executable updates is enabled. Build channel
+development supports a DRAFT candidate; build channel stable requires a
+trusted signing certificate and exact expected publisher identity. The
+release verifier produces a SHA256 executable inventory and rejects invalid
+Authenticode signatures. A valid certificate is NOT currently provided by
+this repository and cannot be fabricated by CI.
+
+Windows Hello/PIN remains the ONLY supported Windows login boundary. JARVIS
+owner passphrases do not authenticate the OS. Voice-based Windows unlock,
+validated spoof-resistant speaker biometrics, signed update/rollback,
+physical microphone tests and independent security review are NOT claimed
+as completed merely because version 1.0 code exists.
+
+Developer packaging tests include real Windows DPAPI encrypted history,
+legacy migration, local AI inference, neural offline voice, Settings GUI,
+silent setup, uninstallation and SHA256 release inventory.

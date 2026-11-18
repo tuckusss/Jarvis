@@ -1,27 +1,29 @@
-# JARVIS v0.9.0 — private project memory development candidate
+# JARVIS v1.0.0 — security and distribution candidate
 
-Source base: v0.8 Windows CI build #22 succeeded.
-Branch: jarvis-v090-private-memory.
-Developer release and current Windows CI: verify the latest GitHub Actions run.
+Base: JARVIS v0.9 Build #25 passed all Windows automated checks.
+Branch: jarvis-v100-secure-release. Keep draft and do not publish stable.
 
-Scope implemented:
-- Opt-in DPAPI CurrentUser encrypted project note vault, separate SQLite DB.
-- Encrypted save/search/delete/backup tools behind owner approval, with
-  bounded search, exact project scope and fail-closed encryption.
-- Local-only deterministic voice/text commands for encrypted notes; no cloud
-  model forwarding and no legacy plaintext chat-history persistence.
-- Read-only project brief built from encrypted notes, reminders and an
-  explicitly user-maintained JARVIS_STATUS.md, with source labels.
-- Windows installer smoke check performs a real DPAPI roundtrip and verifies
-  that encrypted data was not accidentally stored in plaintext.
-- Unit tests for project scoping, deletion, approval, privacy, backup,
-  cloud isolation and encrypted storage.
+### Built
+- Explicitly opted-in Windows CurrentUser DPAPI encryption for NEW ordinary
+  chats, notes and reminders in a separate SQLite database.
+- Owner-confirmed legacy database migration with all-or-nothing copy. Original
+  unencrypted jarvis.db is retained; data deletion is NEVER automatic.
+- Fail-closed startup if encryption was requested but cannot initialise.
+- Windows build channel: DEVELOPMENT permits unsigned draft only. STABLE
+  requires signing certificate + expected publisher identity; verify-release
+  checks trusted Authenticode status and records SHA256 executable hashes.
+- Packaged Windows smoke tests exercise DPAPI encrypted chat, explicit
+  migration, neural speech, local inference, Qt Settings, silent setup and
+  uninstallation.
 
-Boundaries:
-- Legacy history/notes/reminders/audit are NOT encrypted or migrated.
-- The current Windows user/administrator or malware in the same session
-  may still access data or decrypt it. This is not Windows sign-in security.
-- No biometric registered speaker or actual Windows unlock.
-- No live PayCore or Freedom Homes data sync, agent swarms, arbitrary PC
-  automation, independent Windows background service or signed updater.
-- Hardware testing and trusted code signing required before public release.
+### Still outstanding before the name v1.0 means released
+- Trusted publisher signing credentials (not supplied to this repository).
+- Physical Windows 10/11 laptop audio and owner permission acceptance.
+- Independently validated biometric speaker identification and robust
+  anti-spoofing (not part of current executable).
+- True Windows voice unlock requires native, reviewed Credential Provider
+  plus existing Windows login recovery. Never store/auto-type Windows PIN.
+- Legacy plaintext file/backup/SSD remnants need explicit privacy handling.
+- Long-term worker separation, safe signed updater and rollback are not
+  represented as complete.
+- Manual test of Smart App Control, code signing, install/upgrade/recovery.
