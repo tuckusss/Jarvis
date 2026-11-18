@@ -17,7 +17,7 @@ from .project_vault import project_name
 from .request_control import should_cancel
 
 # Any tool that transmits information or modifies external state requires approval.
-APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows", "read_project_status", "remember_project", "search_project_memory", "forget_project_note", "backup_project_memory"}
+APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows", "read_project_status", "remember_project", "search_project_memory", "forget_project_note", "backup_project_memory", "project_brief"}
 
 TOOLS = [
     {"type": "function", "name": "system_status", "description": "Read local CPU, RAM, battery, and operating system information.",
@@ -61,6 +61,10 @@ TOOLS = [
      "parameters": {"type": "object", "properties": {
          "project": {"type": "string"}, "note_id": {"type": "integer"}
      }, "required": ["project", "note_id"], "additionalProperties": False}},
+    {"type": "function", "name": "project_brief",
+     "description": "Prepare a read-only source-labelled brief from approved encrypted project notes, outstanding local reminders and a manually maintained JARVIS_STATUS.md if present; not live business data.",
+     "parameters": {"type": "object", "properties": {"project": {"type": "string"}},
+                    "required": ["project"], "additionalProperties": False}},
     {"type": "function", "name": "backup_project_memory",
      "description": "Create a local backup of encrypted project-note database (Windows account DPAPI protected); user approval required.",
      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
@@ -134,6 +138,11 @@ class ToolExecutor:
         if name == "forget_project_note":
             return ("Permanently delete project note #"+str(args.get("note_id",""))[:20]+
                     " in "+str(args.get("project",""))[:80]+"? This is not undoable.")
+        if name == "project_brief":
+            return ("Prepare a project brief from encrypted local notes, reminders and "
+                    "an existing manually maintained status file for "+
+                    str(args.get("project",""))[:80]+
+                    "? Results may reach the selected AI provider if cloud mode is enabled.")
         if name == "backup_project_memory":
             return ("Create a snapshot of encrypted project notes in JARVIS local backups? "
                     "The snapshot is protected for this same Windows profile; do not expect "
@@ -269,7 +278,7 @@ class ToolExecutor:
         if name == "remember_note":
             self.memory.remember(a["note"])
             return {"saved": True}
-        if name in {"remember_project", "search_project_memory",
+        if name in {"remember_project", "search_project_memory", "project_brief",
                     "forget_project_note", "backup_project_memory"}:
             vault = self.project_vault
             if vault is None or not getattr(self.config, "private_memory_enabled", False):
@@ -283,6 +292,19 @@ class ToolExecutor:
                 return {"encrypted_backup": str(path),
                         "warning": "Current Windows user DPAPI only; not portable to another login"}
             project = project_name(self.config, a["project"])
+            if name == "project_brief":
+                notes = vault.search(project, "", limit=5)
+                reminders = [x for x in self.memory.reminders(limit=50)
+                             if project.casefold() in x["message"].casefold()][:10]
+                manual = {"available": False, "source": "JARVIS_STATUS.md (manual file)"}
+                try:
+                    status = read_project_status(self.config, project)
+                    manual = {"available": True, "source": "JARVIS_STATUS.md (manual file)",
+                              "excerpt": status["content"][:3000]}
+                except (FileNotFoundError, KeyError, ValueError, OSError):
+                    pass
+                return {"project": project, "source": "LOCAL ONLY - no live integrations",
+                        "encrypted_notes": notes, "reminders": reminders, "manual_status": manual}
             if name == "remember_project":
                 return {"encrypted_note_id": vault.remember(project, a["note"]), "project": project}
             if name == "search_project_memory":
@@ -360,6 +382,12 @@ def local_command(text: str, executor: ToolExecutor) -> str | None:
             "name": project_status.group(1)
         })
         return _format_local_result(result)
+    # Read-only, owner-approved project snapshot from explicit local sources.
+    brief = re.fullmatch(r"(?:prepare|show|give me|create)\s+(?:my\s+)?(.+?)\s+(?:project\s+)?brief(?:ing)?[.!]?", text.strip(), re.I)
+    if brief:
+        return _format_local_result(executor.execute("project_brief", {
+            "project": brief.group(1)
+        }))
     # Deterministic protected project-memory commands. The original note text
     # is preserved, unlike the case-folded command used for intent matching.
     save = re.fullmatch(r"(?:remember|save)(?:\s+for|\s+in)\s+(.+?)\s*:\s*(.+)", text.strip(), re.I | re.S)
@@ -386,6 +414,13 @@ def _format_local_result(result: dict) -> str:
         return str(result["error"])
     if "opened" in result:
         return "Opened " + str(result["opened"]) + "."
+    if result.get("source") == "LOCAL ONLY - no live integrations":
+        title = "Local brief for " + result["project"] + " (NOT live data). "
+        manual = result.get("manual_status", {})
+        status = "Manual status: " + (manual.get("excerpt", "") if manual.get("available") else "not supplied")
+        notes = "Private notes: " + ("; ".join(x["note"] for x in result.get("encrypted_notes", [])[:5]) or "none")
+        reminders = "Project reminders: " + ("; ".join(x["message"] for x in result.get("reminders", [])[:10]) or "none")
+        return (title + status + "\n" + notes + "\n" + reminders)[:4400]
     if "encrypted_note_id" in result:
         return "Encrypted project note saved, ID " + str(result["encrypted_note_id"]) + "."
     if "notes" in result and "project" in result:
