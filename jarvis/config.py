@@ -38,6 +38,7 @@ class Config:
     microphone_device: int | None = None
     wake_model_path: str = ""  # legacy compatibility; normally auto-discovered
     save_history: bool = True
+    secure_history_enabled: bool = False  # explicit opt-in; new records from next launch only
     private_memory_enabled: bool = False  # explicit owner opt-in; new project notes only
     google_credentials_path: str = ""
     google_write_enabled: bool = False
