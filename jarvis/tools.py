@@ -13,10 +13,11 @@ from datetime import datetime
 from urllib.parse import urlparse
 from typing import Callable
 from .project_workspace import project_root, read_project_status
+from .project_vault import project_name
 from .request_control import should_cancel
 
 # Any tool that transmits information or modifies external state requires approval.
-APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows", "read_project_status"}
+APPROVAL_REQUIRED = {"read_file", "inspect_screen", "send_email", "create_event", "remember_note", "set_reminder", "recall_conversation", "lock_windows", "read_project_status", "remember_project", "search_project_memory", "forget_project_note", "backup_project_memory"}
 
 TOOLS = [
     {"type": "function", "name": "system_status", "description": "Read local CPU, RAM, battery, and operating system information.",
@@ -45,6 +46,24 @@ TOOLS = [
      "description": "Read only JARVIS_STATUS.md from an explicitly configured project folder after approval; this is a manually updated status file, NOT live business data.",
      "parameters": {"type": "object", "properties": {"name": {"type": "string"}},
                     "required": ["name"], "additionalProperties": False}},
+    {"type": "function", "name": "remember_project",
+     "description": "Save a user-requested note in the separately encrypted Windows DPAPI project vault. Requires opt-in and explicit approval.",
+     "parameters": {"type": "object", "properties": {
+         "project": {"type": "string"}, "note": {"type": "string"}
+     }, "required": ["project", "note"], "additionalProperties": False}},
+    {"type": "function", "name": "search_project_memory",
+     "description": "Retrieve user-created project notes from locally encrypted storage, after explicit approval. May transmit results if cloud AI is enabled.",
+     "parameters": {"type": "object", "properties": {
+         "project": {"type": "string"}, "query": {"type": "string"}
+     }, "required": ["project", "query"], "additionalProperties": False}},
+    {"type": "function", "name": "forget_project_note",
+     "description": "Delete a numbered encrypted project note with explicit approval.",
+     "parameters": {"type": "object", "properties": {
+         "project": {"type": "string"}, "note_id": {"type": "integer"}
+     }, "required": ["project", "note_id"], "additionalProperties": False}},
+    {"type": "function", "name": "backup_project_memory",
+     "description": "Create a local backup of encrypted project-note database (Windows account DPAPI protected); user approval required.",
+     "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
     {"type": "function", "name": "recall_conversation",
      "description": "Search previous local chat messages when the user explicitly asks, after owner approval.",
      "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
@@ -82,9 +101,10 @@ def roots_for(config) -> list[Path]:
 
 class ToolExecutor:
     def __init__(self, config, memory, google, approve: Callable[[str, str], bool],
-                 screen_vision, owner_gate=None):
+                 screen_vision, owner_gate=None, project_vault=None):
         self.config, self.memory, self.google = config, memory, google
         self.owner_gate = owner_gate
+        self.project_vault = project_vault
         self._request_token = contextvars.ContextVar("jarvis_owner_request", default=None)
         self._request_cancel = contextvars.ContextVar("jarvis_cancel", default=None)
         self.approve, self.screen_vision = approve, screen_vision
@@ -102,6 +122,22 @@ class ToolExecutor:
             return f"Read and share with the AI this file?\n{args.get('path','')}"
         if name == "inspect_screen":
             return "Capture the current desktop and send the screenshot to the AI for analysis? Close any sensitive windows first."
+        if name == "remember_project":
+            return ("Save an encrypted note in the Windows-only project vault?\n"
+                    "Project: " + str(args.get("project",""))[:80] + "\n" +
+                    str(args.get("note",""))[:1500])
+        if name == "search_project_memory":
+            return ("Decrypt and search this project's notes?\n"
+                    "Project: " + str(args.get("project",""))[:80] + "\n"
+                    "Search: " + str(args.get("query",""))[:120] +
+                    "\nResults will be supplied to the selected AI provider, including cloud if enabled.")
+        if name == "forget_project_note":
+            return ("Permanently delete project note #"+str(args.get("note_id",""))[:20]+
+                    " in "+str(args.get("project",""))[:80]+"? This is not undoable.")
+        if name == "backup_project_memory":
+            return ("Create a snapshot of encrypted project notes in JARVIS local backups? "
+                    "The snapshot is protected for this same Windows profile; do not expect "
+                    "it to decrypt on another PC without a key migration.")
         if name == "remember_note":
             return f"Store this note locally?\n\n{str(args.get('note', ''))[:1200]}"
         if name == "set_reminder":
@@ -233,6 +269,25 @@ class ToolExecutor:
         if name == "remember_note":
             self.memory.remember(a["note"])
             return {"saved": True}
+        if name in {"remember_project", "search_project_memory",
+                    "forget_project_note", "backup_project_memory"}:
+            vault = self.project_vault
+            if vault is None or not getattr(self.config, "private_memory_enabled", False):
+                raise PermissionError("Encrypted project memory is disabled; enable it in Settings on Windows")
+            if name == "backup_project_memory":
+                from .config import data_dir
+                from datetime import timezone
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                target = data_dir() / "Backups" / ("project-vault-" + stamp + ".sqlite")
+                path = vault.encrypted_backup(target)
+                return {"encrypted_backup": str(path),
+                        "warning": "Current Windows user DPAPI only; not portable to another login"}
+            project = project_name(self.config, a["project"])
+            if name == "remember_project":
+                return {"encrypted_note_id": vault.remember(project, a["note"]), "project": project}
+            if name == "search_project_memory":
+                return {"project": project, "notes": vault.search(project, str(a["query"]))}
+            return {"deleted": vault.forget(project, a["note_id"]), "project": project}
         if name == "recall_notes":
             return {"notes": self.memory.recall(a["query"])}
         if name == "recall_conversation":
@@ -305,6 +360,16 @@ def local_command(text: str, executor: ToolExecutor) -> str | None:
             "name": project_status.group(1)
         })
         return _format_local_result(result)
+    # Deterministic protected project-memory commands. The original note text
+    # is preserved, unlike the case-folded command used for intent matching.
+    save = re.fullmatch(r"(?:remember|save)(?:\s+for|\s+in)\s+(.+?)\s*:\s*(.+)", text.strip(), re.I | re.S)
+    if save:
+        return _format_local_result(executor.execute(
+            "remember_project", {"project": save.group(1), "note": save.group(2)}))
+    lookup = re.fullmatch(r"(?:find|search)\s+(.+?)\s+(?:project\s+)?notes?\s+(?:for|about)\s+(.+)", text.strip(), re.I | re.S)
+    if lookup:
+        return _format_local_result(executor.execute(
+            "search_project_memory", {"project": lookup.group(1), "query": lookup.group(2)}))
     if re.fullmatch(r"(?:list|show|what are)\s+(?:my\s+)?reminders[.!]?", utterance):
         return _format_local_result(executor.execute("list_reminders", {}))
     m = re.fullmatch(r"(?:search|find)\s+(?:my\s+)?files\s+(?:for|named)\s+(.+)", utterance)
@@ -321,6 +386,13 @@ def _format_local_result(result: dict) -> str:
         return str(result["error"])
     if "opened" in result:
         return "Opened " + str(result["opened"]) + "."
+    if "encrypted_note_id" in result:
+        return "Encrypted project note saved, ID " + str(result["encrypted_note_id"]) + "."
+    if "notes" in result and "project" in result:
+        items = result["notes"]
+        return "Encrypted notes for " + result["project"] + ": " + (
+            "; ".join("#"+str(x["id"])+": "+x["note"] for x in items[:10]) or "none found"
+        )
     if "saved" in result:
         return "Saved to local memory."
     if result.get("source") == "JARVIS_STATUS.md":
