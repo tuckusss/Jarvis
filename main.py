@@ -75,6 +75,28 @@ def offline_voice_check() -> int:
     return 0
 
 
+def private_vault_check() -> int:
+    """Exercise real CurrentUser DPAPI using a temporary, disposable database."""
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from jarvis.project_vault import ProjectVault
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "test-private-vault.sqlite"
+        vault = ProjectVault(path)
+        try:
+            note_id = vault.remember("PayCore", "CI encrypted memory test: sample")
+            notes = vault.search("PayCore", "memory")
+            if len(notes) != 1 or notes[0]["id"] != note_id:
+                raise RuntimeError("Encrypted memory search did not roundtrip")
+            if b"CI encrypted memory test" in path.read_bytes():
+                raise RuntimeError("Private memory stored plaintext in SQLite")
+            if not vault.forget("PayCore", note_id):
+                raise RuntimeError("Private memory deletion did not work")
+        finally:
+            vault.close()
+    return 0
+
+
 def gui_smoke_check() -> int:
     """Check that the actual bundled Settings dialog opens without a display."""
     import os
@@ -91,6 +113,12 @@ def gui_smoke_check() -> int:
 
 
 if __name__ == "__main__":
+    if "--private-vault-check" in sys.argv:
+        try:
+            sys.exit(private_vault_check())
+        except Exception:
+            _write_failure("private-vault")
+            sys.exit(1)
     if "--gui-smoke-check" in sys.argv:
         try:
             sys.exit(gui_smoke_check())
