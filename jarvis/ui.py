@@ -839,6 +839,9 @@ class JarvisWindow(QMainWindow):
         self._set_busy(False)
 
     def _listen(self):
+        if self._history_restart_needed():
+            self._notice("Restart JARVIS before using the microphone after a history encryption change.")
+            return
         if self._busy:
             return
         if self._speaking:
@@ -1147,7 +1150,7 @@ class JarvisWindow(QMainWindow):
     def migrate_history(self):
         if self._busy or not self._authorise_owner("migrate legacy JARVIS history"):
             return
-        if not isinstance(self.memory, SecureMemory):
+        if not isinstance(self.memory, SecureMemory) or self._history_restart_needed():
             self._notice("Enable encrypted history in Settings and fully restart JARVIS first.")
             return
         legacy = data_dir() / "jarvis.db"
@@ -1264,6 +1267,11 @@ class JarvisWindow(QMainWindow):
         self._run_task(self.google.connect, lambda _: (self._append("SYSTEM", "Google connected"), self._set_busy(False)), self._fail_answer)
 
     def _start_wake(self):
+        if self._history_restart_needed():
+            if self.wake_listener:
+                self.wake_listener.stop()
+                self.wake_listener = None
+            return
         if self.wake_listener:
             self.wake_listener.stop()
             self.wake_listener = None
