@@ -1,6 +1,7 @@
 """Private memory never writes note plaintext to SQLite."""
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -32,7 +33,7 @@ class ProjectVaultTests(TestCase):
     def test_encrypt_then_search_scoped_to_project(self):
         note_id = self.vault.remember("PayCore", "Nayax operator settlement milestone")
         self.vault.remember("Freedom Homes", "Monthly inspection status")
-        with sqlite3.connect(str(self.path)) as db:
+        with closing(sqlite3.connect(str(self.path))) as db:
             data = db.execute("SELECT secret FROM project_notes WHERE id=?", (note_id,)).fetchone()[0]
         self.assertNotIn(b"Nayax", data)
         self.assertIn(b"test-cipher:", data)
