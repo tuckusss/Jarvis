@@ -38,6 +38,7 @@ class Config:
     microphone_device: int | None = None
     wake_model_path: str = ""  # legacy compatibility; normally auto-discovered
     save_history: bool = True
+    private_memory_enabled: bool = False  # explicit owner opt-in; new project notes only
     google_credentials_path: str = ""
     google_write_enabled: bool = False
     sites: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SITES))

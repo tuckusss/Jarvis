@@ -1,4 +1,4 @@
-# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.8.0)
+# JARVIS Desktop for Windows — Offline-first Hybrid Assistant (v0.9.0)
 
 **Distribution target:** One Windows 10/11 x64 setup EXE, containing the complete desktop application, Python runtime, offline speech model, CPU inference engine, and offline language model. End users need **neither Python, Ollama, PowerShell, model folders, nor an OpenAI API key**. This repository/ZIP is a **build project**, not the finished EXE; no signed Windows installer has been compiled or hardware-tested in this Linux build environment.
 
@@ -182,3 +182,40 @@ Architecture research references:
   https://learn.microsoft.com/en-us/windows/win32/recovery/using-application-recovery-and-restart
 - llama.cpp server lifecycle:
   https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+
+
+## v0.9.0 — private project memory and grounded local briefing
+
+**New and opt-in:** In Settings, enable "Private project notes." JARVIS
+then uses Windows CurrentUser DPAPI to encrypt the contents of notes
+before storing them in a separate local project_vault.sqlite database.
+Project names, timestamps, note IDs and record counts remain metadata.
+The existing legacy chat history, reminders, notes, audit log, Windows
+swap files and any screenshots are NOT encrypted by this feature.
+JARVIS makes no claim to protect against malware or processes already
+operating as the same signed-in Windows user.
+
+Example voice/text commands (each requires on-screen owner approval):
+- "Remember for PayCore: Confirm next device trial"
+- "Search PayCore notes about device"
+- "Prepare PayCore brief"
+
+The project brief uses ONLY approved, opt-in local sources: encrypted
+project notes, outstanding local reminders mentioning the project and
+an optional, manually maintained JARVIS_STATUS.md. It does not access
+live COHO, PayProp, Nayax, PayCore CRM, or Freedom Homes systems.
+
+Users can also approve deleting a specific project note or backing up
+the ciphertext database through the tool interface. Backups remain
+protected by the original Windows user DPAPI keys; they are not a
+portable recovery format. No unencrypted export is performed.
+Private shorthand commands bypass cloud AI and the legacy chat-history
+database, but other use of cloud AI may transmit approved tool results
+to the provider when explicitly approved. Avoid typing secrets into
+ordinary chat, which is not encrypted in v0.9.
+
+A developer Windows installer must pass package import, Settings UI,
+actual DPAPI private-vault roundtrip, offline neural speech and local AI
+inference, installation and uninstallation tests before it is considered
+a validated build candidate. Trusted signing and physical voice tests
+remain outstanding.

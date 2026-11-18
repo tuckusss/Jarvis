@@ -36,7 +36,7 @@ def evaluate_release(data: dict, current_version: str) -> dict:
     }
 
 
-def check_official_release(current_version: str = "0.8.0") -> dict:
+def check_official_release(current_version: str = "0.9.0") -> dict:
     request = Request(RELEASE_API, headers={
         "User-Agent": "JARVIS-Desktop-Update-Checker",
         "Accept": "application/vnd.github+json",

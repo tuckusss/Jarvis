@@ -23,6 +23,7 @@ from .config import Config, api_key, save_api_key, data_dir
 from .google_connector import GoogleConnector
 from .memory import Memory
 from .owner_auth import OwnerGate
+from .project_vault import ProjectVault
 from .gaming import GamingState, installed_game_running
 from .audio_devices import input_devices, microphone_probe
 from .updates import check_official_release
@@ -210,6 +211,10 @@ class SettingsDialog(QDialog):
         self.voice_speed.setCurrentIndex(max(0, self.voice_speed.findData(cfg.voice_speed)))
         self.history = QCheckBox("Save local chat history")
         self.history.setChecked(cfg.save_history)
+        self.private_notes = QCheckBox(
+            "Enable separately encrypted project notes (Windows DPAPI; existing chat is NOT encrypted)"
+        )
+        self.private_notes.setChecked(cfg.private_memory_enabled)
         self.wake = QCheckBox("Enable offline 'Jarvis' wake word (no model folder needed)")
         self.wake.setChecked(cfg.wake_enabled)
         self.microphones = QComboBox()
@@ -248,6 +253,7 @@ class SettingsDialog(QDialog):
         form.addRow("Voice", self.voice_choice)
         form.addRow("Speaking speed", self.voice_speed)
         form.addRow("Local memory", self.history)
+        form.addRow("Private project notes", self.private_notes)
         form.addRow("Wake listener", self.wake)
         form.addRow("Input microphone", self.microphones)
         form.addRow("Microphone diagnostics", self.microphone_test)
@@ -300,7 +306,7 @@ class SettingsDialog(QDialog):
     def _check_updates(self):
         self.check_updates_button.setEnabled(False)
         self.check_updates_button.setText("CHECKING OFFICIAL RELEASES…")
-        self._update_task = Task(lambda: check_official_release("0.8.0"))
+        self._update_task = Task(lambda: check_official_release("0.9.0"))
         self._update_task.signals.done.connect(self._update_result)
         self._update_task.signals.failed.connect(self._update_error)
         QThreadPool.globalInstance().start(self._update_task)
@@ -425,6 +431,7 @@ class SettingsDialog(QDialog):
             self.cfg.voice_name = self.voice_choice.currentData()
             self.cfg.voice_speed = float(self.voice_speed.currentData())
             self.cfg.save_history = self.history.isChecked()
+            self.cfg.private_memory_enabled = self.private_notes.isChecked()
             self.cfg.wake_enabled = self.wake.isChecked()
             self.cfg.microphone_device = self.microphones.currentData()
             self.cfg.gaming_mode_enabled = self.gaming_enabled.isChecked()
@@ -461,6 +468,9 @@ class JarvisWindow(QMainWindow):
         self.owner_gate = OwnerGate()
         self.game_state = GamingState(False)
         self.memory = Memory()
+        self.project_vault = None
+        self._private_memory_error = ""
+        self._configure_private_memory()
         self.google = GoogleConnector(self.config)
         self.speaker = Speaker(
             on_finished=lambda: self.bridge.speech_finished.emit(),
@@ -482,7 +492,7 @@ class JarvisWindow(QMainWindow):
         self.agent = None
         executor = ToolExecutor(self.config, self.memory, self.google, self._approve,
                                 lambda: self.agent.describe_screen(),
-                                owner_gate=self.owner_gate)
+                                owner_gate=self.owner_gate, project_vault=self.project_vault)
         self.executor = executor
         self.agent = Agent(self.config, self.memory, executor)
         self.agent.local_runtime.gaming_mode_enabled = self.config.gaming_mode_enabled
@@ -521,6 +531,10 @@ class JarvisWindow(QMainWindow):
         header.addStretch()
         self.clock = muted("")
         header.addWidget(self.clock)
+        private = QPushButton("PRIVATE NOTES")
+        private.setToolTip("Encrypted PayCore/Freedom Homes notes (requires opt-in in Settings)")
+        private.clicked.connect(self.open_private_notes)
+        header.addWidget(private)
         settings = QPushButton("⚙  SETTINGS")
         settings.clicked.connect(self.settings)
         header.addWidget(settings)
@@ -966,11 +980,45 @@ class JarvisWindow(QMainWindow):
         self.stop_speaking()
         self._notice("JARVIS owner access locked.")
 
+    def _configure_private_memory(self):
+        if not self.config.private_memory_enabled:
+            if self.project_vault is not None:
+                self.project_vault.close()
+            self.project_vault = None
+            self._private_memory_error = ""
+            if hasattr(self, "executor"):
+                self.executor.project_vault = None
+            return
+        if self.project_vault is None:
+            try:
+                self.project_vault = ProjectVault()
+                self._private_memory_error = ""
+            except (OSError, ValueError, RuntimeError) as exc:
+                # No cleartext fallback; the owner can turn the feature off.
+                self.project_vault = None
+                self._private_memory_error = type(exc).__name__
+        if hasattr(self, "executor"):
+            self.executor.project_vault = self.project_vault
+
+    def open_private_notes(self):
+        if not self._authorise_owner("open encrypted project notes"):
+            return
+        if not self.config.private_memory_enabled:
+            self._notice("Enable Private project notes in Settings first.")
+            self.settings()
+            return
+        if self.project_vault is None:
+            self._notice("Encrypted notes unavailable: Windows DPAPI could not initialise. No plaintext was saved.")
+            return
+        self.entry.setText("Search PayCore notes about ")
+        self.entry.setFocus()
+
     def settings(self):
         if not self._authorise_owner("change JARVIS settings"):
             return
         dlg = SettingsDialog(self.config, self)
         if dlg.exec() == QDialog.Accepted:
+            self._configure_private_memory()
             self.agent.client = None  # update API key and model
             self.toggle_voice(update_only=True)
             self.speaker.configure(engine=self.config.voice_engine,
@@ -1191,6 +1239,8 @@ class JarvisWindow(QMainWindow):
             self.wake_listener.stop()
         self.speaker.stop()
         self.agent.close()
+        if self.project_vault is not None:
+            self.project_vault.close()
         self._quitting = True
         if self.tray:
             self.tray.hide()

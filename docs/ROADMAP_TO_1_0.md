@@ -7,8 +7,8 @@
 - Pass Windows packaging + full integration smoke checks
 - Get real laptop audio and user feedback before the next release
 
-## v0.9 — FUTURE, NOT IMPLEMENTED
-- Encrypted, opt-in project memory with retention/export/delete
+## v0.9 — CURRENT: PRIVATE MEMORY, NOT FULL MEMORY MIGRATION
+- Opt-in Windows DPAPI project notes, delete and same-profile encrypted backup
 - Separate worker from dashboard with explicit OS authorization boundaries
 - Trusted application planning and permissioned read-only desktop/screen tools
 - More robust audio pipeline (evaluate neural VAD / echo cancellation)
