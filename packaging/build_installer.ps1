@@ -2,12 +2,20 @@
 [CmdletBinding()]
 param(
     [switch]$SkipDependencyInstall,
-    [string]$Version = "0.9.0"
+    [string]$Version = "1.0.0"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $root
+
+$releaseChannel = if ($env:JARVIS_RELEASE_CHANNEL) { $env:JARVIS_RELEASE_CHANNEL } else { "development" }
+if ($releaseChannel -notin @("development", "stable")) { throw "Invalid release channel" }
+if ($releaseChannel -eq "stable" -and
+    (-not $env:JARVIS_SIGNING_PFX_BASE64 -or -not $env:JARVIS_SIGNING_PASSWORD -or
+     -not $env:JARVIS_EXPECTED_PUBLISHER_SUBJECT)) {
+    throw "Stable release requires code-signing credentials and expected publisher; cannot build unsigned"
+}
 
 function Require-LastExit([string]$step) {
     if ($LASTEXITCODE -ne 0) { throw "$step failed with exit code $LASTEXITCODE" }
@@ -191,7 +199,9 @@ try {
         $installerSignature = Get-AuthenticodeSignature -FilePath $output
         if ($installerSignature.Status -ne 'Valid') { throw "Installer Authenticode signature is not valid" }
     }
-    Write-Host "Built $output" -ForegroundColor Green
+    & (Join-Path $root 'packaging\verify_release.ps1') -Installer $output -DistributionDir (Join-Path $root 'dist\JarvisDesktop') -Channel $releaseChannel -ExpectedPublisher $env:JARVIS_EXPECTED_PUBLISHER_SUBJECT
+    if ($LASTEXITCODE -ne 0) { throw "Release signature and hash verification failed" }
+    Write-Host "Built $output as $releaseChannel candidate" -ForegroundColor Green
 } finally {
     $env:JARVIS_SIGNING_READY = "0"
     if ($cert -and -not $certWasAlreadyInstalled) { Remove-Item ("Cert:\CurrentUser\My\" + $thumb) -ErrorAction SilentlyContinue }
