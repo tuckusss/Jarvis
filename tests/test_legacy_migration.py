@@ -48,7 +48,7 @@ class LegacyMigrationTests(TestCase):
         self.assertEqual(self.secure.recent()[0]["content"], "Project controller revision notes")
         self.assertEqual(self.secure.recall("maintenance"), ["Freedom Homes weekly maintenance"])
         self.assertNotIn(b"Project controller revision", self.secure.path.read_bytes())
-        self.assertIn(b"Project controller revision", self.legacy.path.read_bytes())
+        self.assertEqual(self.legacy.recent()[0]["content"], "Project controller revision notes")
 
     def test_cannot_copy_legacy_twice(self):
         self.legacy.message("user", "One-time source")
