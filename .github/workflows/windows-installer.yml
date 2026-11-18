@@ -32,6 +32,20 @@ jobs:
       - name: Test owner boundaries, gaming mode, audio input, projects and AI
         shell: pwsh
         run: python -m unittest discover -s tests -v
+      - name: Stable build must reject missing code signing credentials
+        shell: pwsh
+        run: |
+          $env:JARVIS_RELEASE_CHANNEL = "stable"
+          Remove-Item Env:JARVIS_SIGNING_PFX_BASE64 -ErrorAction SilentlyContinue
+          Remove-Item Env:JARVIS_SIGNING_PASSWORD -ErrorAction SilentlyContinue
+          Remove-Item Env:JARVIS_EXPECTED_PUBLISHER_SUBJECT -ErrorAction SilentlyContinue
+          try {
+            & .\packaging\build_installer.ps1 -SkipDependencyInstall
+            throw "Stable build incorrectly accepted unsigned signing configuration"
+          } catch {
+            if ($_.Exception.Message -notmatch "Stable release requires") { throw }
+            Write-Host "Verified: unsigned stable builds are rejected"
+          }
 
   windows-installer:
     needs: fast-unit-tests
