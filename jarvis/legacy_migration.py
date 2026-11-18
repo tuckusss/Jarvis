@@ -7,6 +7,7 @@ Migration runs under a single transaction in the encrypted destination.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 from .request_control import check_cancelled
@@ -20,7 +21,7 @@ def preview_legacy(path: Path) -> dict:
     path = Path(path).resolve()
     if not path.is_file():
         return {"available": False, "messages": 0, "notes": 0, "reminders": 0}
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as source:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as source:
         source.execute("PRAGMA query_only=ON")
         sizes = {}
         for table in ("messages", "notes", "reminders"):
@@ -41,7 +42,7 @@ def migrate_legacy(legacy_path: Path, destination: SecureMemory, *,
     if source_path == destination.path.resolve():
         raise ValueError("Source and destination must be separate databases")
     counts = preview_legacy(source_path)
-    with sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True) as source:
+    with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)) as source:
         source.execute("PRAGMA query_only=ON")
         source.execute("BEGIN")  # Stable view during the encrypted copy.
         with destination.lock:
