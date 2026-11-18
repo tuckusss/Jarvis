@@ -97,6 +97,38 @@ def private_vault_check() -> int:
     return 0
 
 
+def secure_history_check() -> int:
+    """Real Windows DPAPI encryption + opt-in legacy migration in a disposable DB."""
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from jarvis.memory import Memory
+    from jarvis.secure_memory import SecureMemory
+    from jarvis.legacy_migration import migrate_legacy
+    with TemporaryDirectory() as folder:
+        root = Path(folder)
+        old = Memory(root / "legacy-jarvis.db")
+        try:
+            old.message("user", "Sensitive JARVIS 1.0 memory check")
+            old.remember("Private note requiring legacy migration")
+        finally:
+            old.close()
+        secure = SecureMemory(root / "new-secure-history.db")
+        try:
+            secure.message("assistant", "New DPAPI record")
+            result = migrate_legacy(root / "legacy-jarvis.db", secure, approved=True)
+            if result["copied"]["messages"] != 1 or result["copied"]["notes"] != 1:
+                raise RuntimeError("Encrypted history migration did not preserve source counts")
+            if len(secure.search_messages("Sensitive")) != 1:
+                raise RuntimeError("Encrypted history search did not roundtrip")
+            if b"Sensitive JARVIS" in secure.path.read_bytes():
+                raise RuntimeError("Secure history retained plaintext content")
+            if b"Private note requiring" in secure.path.read_bytes():
+                raise RuntimeError("Secure notes retained plaintext content")
+        finally:
+            secure.close()
+    return 0
+
+
 def gui_smoke_check() -> int:
     """Check that the actual bundled Settings dialog opens without a display."""
     import os
@@ -113,6 +145,12 @@ def gui_smoke_check() -> int:
 
 
 if __name__ == "__main__":
+    if "--secure-history-check" in sys.argv:
+        try:
+            sys.exit(secure_history_check())
+        except Exception:
+            _write_failure("secure-history")
+            sys.exit(1)
     if "--private-vault-check" in sys.argv:
         try:
             sys.exit(private_vault_check())
