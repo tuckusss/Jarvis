@@ -7,6 +7,7 @@ encrypted by this feature. Search decrypts in-memory only after owner approval.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import closing
 from pathlib import Path
 import re
 import sqlite3
@@ -113,7 +114,7 @@ class ProjectVault:
             raise FileExistsError("Refusing to overwrite an existing vault backup")
         destination.parent.mkdir(parents=True, exist_ok=True)
         with self.lock:
-            with sqlite3.connect(str(destination)) as target:
+            with closing(sqlite3.connect(str(destination))) as target:
                 self.db.backup(target)
         return destination
 
