@@ -57,6 +57,20 @@ class Agent:
         check_cancelled(cancel_event)
         if not text.strip():
             return ""
+        # Explicit private-memory commands are deterministic and local-only.
+        # Do NOT pass their plaintext or decrypted results to cloud models or
+        # write them to the legacy, unencrypted chat-history database.
+        private_intent = re.fullmatch(
+            r"(?:hey\s+)?(?:jarvis[,! ]*)?"
+            r"(?:(?:remember|save)(?:\s+for|\s+in)\s+.+?:\s*.+|"
+            r"(?:find|search)\s+.+?\s+(?:project\s+)?notes?\s+(?:for|about)\s+.+)",
+            text.strip(), flags=re.I | re.S,
+        )
+        if private_intent:
+            from .tools import local_command
+            reply = local_command(text, self.executor)
+            if reply is not None:
+                return reply
         if self.client is not None:  # Supports deterministic injected test clients.
             return self._ask_cloud(text, cancel_event=cancel_event)
         mode = getattr(self.config, "provider", "local")
