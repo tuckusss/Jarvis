@@ -88,8 +88,41 @@ class PrivateToolTests(TestCase):
         self.tool.execute("remember_project", {
             "project":"Personal","note":"Private vault backup example"
         })
-        backup = self.tool.execute("backup_project_memory", {})
+        from unittest.mock import patch
+        with patch("jarvis.config.data_dir", return_value=Path(self.temp.name)):
+            backup = self.tool.execute("backup_project_memory", {})
         self.assertTrue(backup["encrypted_backup"].endswith(".sqlite"))
         data = Path(backup["encrypted_backup"]).read_bytes()
         self.assertNotIn(b"Private vault backup example", data)
-        Path(backup["encrypted_backup"]).unlink(missing_ok=True)
+
+
+class ProjectBriefTests(TestCase):
+    def test_readonly_brief_includes_grounded_local_sources(self):
+        from unittest.mock import patch
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            cfg = Config()
+            cfg.private_memory_enabled = True
+            cfg.project_folders = {"PayCore": str(root)}
+            (root / "JARVIS_STATUS.md").write_text(
+                "Controller test results manually updated", encoding="utf-8"
+            )
+            memory = Memory(root / "legacy.db")
+            vault = ProjectVault(root / "vault.db", protector=FakeProtector())
+            vault.remember("PayCore", "Pilot deployment is in preparation")
+            approvals = []
+            tool = ToolExecutor(cfg, memory, MagicMock(),
+                                lambda name, preview: approvals.append(name) or True,
+                                lambda: "", project_vault=vault)
+            agent = Agent(cfg, memory, tool, client=MagicMock())
+            try:
+                text = agent.ask("Prepare PayCore brief")
+                self.assertIn("Pilot deployment", text)
+                self.assertIn("Controller test results", text)
+                self.assertIn("NOT live data", text)
+                self.assertIn("project_brief", approvals)
+                agent.client.responses.create.assert_not_called()
+                self.assertEqual(memory.recent(), [])
+            finally:
+                vault.close()
+                memory.close()
