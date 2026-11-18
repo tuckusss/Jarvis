@@ -106,6 +106,13 @@ if ($p.ExitCode -ne 0) {
     if (Test-Path $log) { Get-Content $log -Tail 55 | ForEach-Object { Write-Host $_ } }
     throw "Packaged Settings UI smoke check failed (exit code $($p.ExitCode))"
 }
+$p = Start-Process -FilePath $exe -ArgumentList '--private-vault-check' -Wait -PassThru -WindowStyle Hidden
+if ($p.ExitCode -ne 0) {
+    $log = Join-Path $env:TEMP 'jarvis-private-vault-error.log'
+    if ($env:RUNNER_TEMP) { $log = Join-Path $env:RUNNER_TEMP 'jarvis-private-vault-error.log' }
+    if (Test-Path $log) { Get-Content $log -Tail 55 | ForEach-Object { Write-Host $_ } }
+    throw "Packaged Windows DPAPI vault smoke check failed (exit code $($p.ExitCode))"
+}
 $p = Start-Process -FilePath $exe -ArgumentList '--offline-voice-check' -Wait -PassThru -WindowStyle Hidden
 
 if ($p.ExitCode -ne 0) {
