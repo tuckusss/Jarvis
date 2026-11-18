@@ -17,6 +17,7 @@ import sqlite3
 import tempfile
 
 from .secure_memory import PREFIX, SecureMemory
+from .request_control import check_cancelled
 from .windows_crypto import WindowsDpapi
 
 _MAX_RECORDS_PER_TABLE = 100_000
@@ -74,13 +75,14 @@ def verify_secure_backup(path: Path, *, protector=None) -> dict:
     }
 
 
-def create_secure_backup(memory: SecureMemory, destination: Path) -> dict:
+def create_secure_backup(memory: SecureMemory, destination: Path, *, cancel_event=None) -> dict:
     """Snapshot the active vault without modifying it; refuse overwrites.
 
     The final filename is reserved using O_EXCL. An interrupted copy may leave
     an incomplete destination; re-run verification before treating it as a
     backup. The original live memory is never touched.
     """
+    check_cancelled(cancel_event)
     if not isinstance(memory, SecureMemory):
         raise TypeError("Backups require encrypted history to be active")
     destination = Path(destination).expanduser().resolve()
@@ -103,16 +105,21 @@ def create_secure_backup(memory: SecureMemory, destination: Path) -> dict:
         with closing(sqlite3.connect(str(tmp_path))) as target:
             with memory.lock:
                 memory.db.backup(target)
+        check_cancelled(cancel_event)
         # Validate ciphertext BEFORE writing a user-visible backup filename.
         verify_secure_backup(tmp_path, protector=memory.protector)
+        check_cancelled(cancel_event)
         fd = os.open(str(destination), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         created_final = True
         with os.fdopen(fd, "wb") as out, tmp_path.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                check_cancelled(cancel_event)
                 out.write(chunk)
             out.flush()
             os.fsync(out.fileno())
-        return verify_secure_backup(destination, protector=memory.protector)
+        result = verify_secure_backup(destination, protector=memory.protector)
+        check_cancelled(cancel_event)
+        return result
     except BaseException:
         if created_final:
             destination.unlink(missing_ok=True)

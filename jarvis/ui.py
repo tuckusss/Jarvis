@@ -23,6 +23,7 @@ from .config import Config, api_key, save_api_key, data_dir
 from .google_connector import GoogleConnector
 from .memory import Memory
 from .secure_memory import SecureMemory
+from .secure_backup import create_secure_backup, verify_secure_backup
 from .legacy_migration import migrate_legacy, preview_legacy
 from .owner_auth import OwnerGate
 from .project_vault import ProjectVault
@@ -555,10 +556,15 @@ class JarvisWindow(QMainWindow):
         header.addStretch()
         self.clock = muted("")
         header.addWidget(self.clock)
-        migrate = QPushButton("MIGRATE HISTORY")
-        migrate.setToolTip("Copy old unencrypted history into the current encrypted vault. The old file remains.")
-        migrate.clicked.connect(self.migrate_history)
-        header.addWidget(migrate)
+        recovery = QPushButton("RECOVERY")
+        recovery.setToolTip("Backup, verify or migrate encrypted history (Windows profile-bound)")
+        recovery_menu = QMenu(recovery)
+        recovery_menu.addAction("Create encrypted history backup", self.backup_history)
+        recovery_menu.addAction("Verify existing encrypted backup", self.verify_history_backup)
+        recovery_menu.addSeparator()
+        recovery_menu.addAction("Copy legacy history into encrypted storage", self.migrate_history)
+        recovery.setMenu(recovery_menu)
+        header.addWidget(recovery)
         private = QPushButton("PRIVATE NOTES")
         private.setToolTip("Encrypted PayCore/Freedom Homes notes (requires opt-in in Settings)")
         private.clicked.connect(self.open_private_notes)
@@ -702,6 +708,9 @@ class JarvisWindow(QMainWindow):
         # The signals are QObject-owned and connected until the task finishes.
 
     def submit(self, text: str, from_voice: bool = False):
+        if self._history_restart_needed():
+            self._notice("Restart JARVIS to apply encrypted-history Settings before issuing new commands.")
+            return
         text = text.strip()
         if self._busy or not text:
             return
@@ -1041,6 +1050,100 @@ class JarvisWindow(QMainWindow):
         self.entry.setText("Search PayCore notes about ")
         self.entry.setFocus()
 
+    def _history_restart_needed(self):
+        return self.config.secure_history_enabled != isinstance(self.memory, SecureMemory)
+
+    def backup_history(self):
+        if self._busy or not self._authorise_owner("back up your encrypted history"):
+            return
+        if not isinstance(self.memory, SecureMemory) or self._history_restart_needed():
+            self._notice("Encrypted history is not active. Enable it and fully restart JARVIS.")
+            return
+        folder = data_dir() / "Backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        suggested = folder / ("JARVIS-secure-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".sqlite")
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Create encrypted JARVIS history backup", str(suggested),
+            "Encrypted SQLite backup (*.sqlite)",
+        )
+        if not filename:
+            return
+        if Path(filename).exists():
+            self._notice("Backup filename already exists. Choose a new filename.")
+            return
+        if QMessageBox.question(
+            self, "Encrypted history backup",
+            "Create a read-only verified snapshot of encrypted chat, notes and reminders?\n\n"
+            "This BACKUP is tied to the CURRENT Windows profile. Moving it to a different "
+            "PC or Windows account normally makes it undecryptable. This does NOT include "
+            "older plaintext history or the separate project-note vault. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+        self._request_cancel = threading.Event()
+        self._set_busy(True, "ENCRYPTED HISTORY / BACKING UP")
+        self._run_task(
+            lambda: create_secure_backup(self.memory, Path(filename),
+                                         cancel_event=self._request_cancel),
+            self._backup_done, self._backup_failed,
+        )
+
+    def _backup_done(self, result):
+        self._request_cancel = None
+        self._set_busy(False)
+        records = result["records"]
+        self._notice(
+            "Encrypted backup verified on this Windows profile: "
+            f"{records['messages']} chats, {records['notes']} notes, "
+            f"{records['reminders']} reminders. SHA256: {result['sha256'][:16]}… "
+            "Source database unchanged; this is not a portable account recovery."
+        )
+
+    def _backup_failed(self, _error):
+        cancelled = self._request_cancel is not None and self._request_cancel.is_set()
+        self._request_cancel = None
+        self._set_busy(False)
+        self._notice(
+            "Encrypted backup cancelled; source data unchanged."
+            if cancelled else
+            "Encrypted backup failed validation. Original data was not changed."
+        )
+
+    def verify_history_backup(self):
+        if self._busy or not self._authorise_owner("verify an encrypted history backup"):
+            return
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Verify JARVIS encrypted history", str(data_dir() / "Backups"),
+            "Encrypted SQLite backup (*.sqlite)",
+        )
+        if not filename:
+            return
+        self._set_busy(True, "ENCRYPTED HISTORY / VERIFYING BACKUP")
+        self._run_task(
+            lambda: verify_secure_backup(Path(filename)),
+            self._verify_backup_done, self._verify_backup_failed,
+        )
+
+    def _verify_backup_done(self, result):
+        self._set_busy(False)
+        records = result["records"]
+        QMessageBox.information(
+            self, "Backup verified for this Windows profile",
+            f"Backup is readable now: {records['messages']} chats, "
+            f"{records['notes']} notes, {records['reminders']} reminders.\n\n"
+            f"SHA256: {result['sha256']}\n\n"
+            "This verifies CURRENT-PROFILE decryptability and file integrity, "
+            "NOT portability, file origin or future recovery after a Windows "
+            "profile reset. JARVIS has not overwritten or restored any data.",
+        )
+
+    def _verify_backup_failed(self, _reason):
+        self._set_busy(False)
+        self._notice(
+            "Backup verification failed: the file is damaged, incompatible or "
+            "cannot be decrypted under this Windows account. No data was modified."
+        )
+
     def migrate_history(self):
         if self._busy or not self._authorise_owner("migrate legacy JARVIS history"):
             return
@@ -1104,14 +1207,22 @@ class JarvisWindow(QMainWindow):
                          "Error: " + str(reason)[:130])
 
     def settings(self):
+        if self._busy:
+            self._notice("Finish or cancel the current operation before changing Settings.")
+            return
         if not self._authorise_owner("change JARVIS settings"):
             return
         dlg = SettingsDialog(self.config, self)
         previous_secure_mode = self.config.secure_history_enabled
         if dlg.exec() == QDialog.Accepted:
-            if self.config.secure_history_enabled != isinstance(self.memory, SecureMemory):
-                self._notice("Encrypted history setting changed: fully quit and reopen "
-                             "JARVIS before issuing new commands. Current memory mode is unchanged.")
+            if self._history_restart_needed():
+                if self.wake_listener:
+                    self.wake_listener.stop()
+                    self.wake_listener = None
+                self._notice(
+                    "Encrypted-history mode changed. For privacy, new commands and "
+                    "reminders are paused until you fully quit and restart JARVIS."
+                )
             self._configure_private_memory()
             self.agent.client = None  # update API key and model
             self.toggle_voice(update_only=True)
@@ -1208,6 +1319,10 @@ class JarvisWindow(QMainWindow):
             self.tray.showMessage("JARVIS", text[:160], QSystemTrayIcon.Information, 4000)
 
     def _poll_reminders(self):
+        if self._history_restart_needed():
+            # A mode switch must not mark plaintext reminders as fired or
+            # decrypt history under the previous storage policy.
+            return
         if self.owner_gate.enrolled and not self.owner_gate.authorised():
             # Preserve pending reminders until private access is unlocked.
             return

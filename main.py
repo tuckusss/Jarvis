@@ -97,6 +97,33 @@ def private_vault_check() -> int:
     return 0
 
 
+def secure_history_backup_check() -> int:
+    """Validate the actual packaged CurrentUser DPAPI backup path."""
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from jarvis.secure_memory import SecureMemory
+    from jarvis.secure_backup import create_secure_backup, verify_secure_backup
+    with TemporaryDirectory() as folder:
+        base = Path(folder)
+        live = SecureMemory(base / "live-history.sqlite")
+        backup = base / "encrypted-recovery.sqlite"
+        try:
+            live.message("user", "JARVIS recovery check private test")
+            live.remember("Private local note for recovery")
+            report = create_secure_backup(live, backup)
+            if report["records"]["messages"] != 1:
+                raise RuntimeError("Encrypted history backup missing message")
+            if verify_secure_backup(backup)["sha256"] != report["sha256"]:
+                raise RuntimeError("Encrypted history verification hash mismatch")
+            if b"recovery check private test" in backup.read_bytes():
+                raise RuntimeError("Encrypted history backup leaked plaintext")
+            if live.recent()[0]["content"] != "JARVIS recovery check private test":
+                raise RuntimeError("Backup altered source history")
+        finally:
+            live.close()
+    return 0
+
+
 def secure_history_check() -> int:
     """Real Windows DPAPI encryption + opt-in legacy migration in a disposable DB."""
     from pathlib import Path
@@ -145,6 +172,12 @@ def gui_smoke_check() -> int:
 
 
 if __name__ == "__main__":
+    if "--secure-backup-check" in sys.argv:
+        try:
+            sys.exit(secure_history_backup_check())
+        except Exception:
+            _write_failure("secure-backup")
+            sys.exit(1)
     if "--secure-history-check" in sys.argv:
         try:
             sys.exit(secure_history_check())
