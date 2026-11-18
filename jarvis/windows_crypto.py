@@ -32,17 +32,18 @@ class WindowsDpapi:
             ]
         self.Blob = DataBlob
 
-        for function in (self.crypt32.CryptProtectData, self.crypt32.CryptUnprotectData):
-            function.restype = ctypes.c_int
-            function.argtypes = [
-                ctypes.POINTER(DataBlob), ctypes.c_wchar_p,
-                ctypes.POINTER(DataBlob), ctypes.c_void_p, ctypes.c_void_p,
-                ctypes.c_ulong, ctypes.POINTER(DataBlob),
-            ] if function is self.crypt32.CryptProtectData else [
-                ctypes.POINTER(DataBlob), ctypes.c_void_p,
-                ctypes.POINTER(DataBlob), ctypes.c_void_p, ctypes.c_void_p,
-                ctypes.c_ulong, ctypes.POINTER(DataBlob),
-            ]
+        self.crypt32.CryptProtectData.restype = ctypes.c_int
+        self.crypt32.CryptProtectData.argtypes = [
+            ctypes.POINTER(DataBlob), ctypes.c_wchar_p,
+            ctypes.POINTER(DataBlob), ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_ulong, ctypes.POINTER(DataBlob),
+        ]
+        self.crypt32.CryptUnprotectData.restype = ctypes.c_int
+        self.crypt32.CryptUnprotectData.argtypes = [
+            ctypes.POINTER(DataBlob), ctypes.POINTER(ctypes.c_wchar_p),
+            ctypes.POINTER(DataBlob), ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_ulong, ctypes.POINTER(DataBlob),
+        ]
         self.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
         self.kernel32.LocalFree.restype = ctypes.c_void_p
 
