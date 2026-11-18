@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipDependencyInstall,
-    [string]$Version = "0.8.0"
+    [string]$Version = "0.9.0"
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"

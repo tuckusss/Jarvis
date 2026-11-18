@@ -306,7 +306,7 @@ class SettingsDialog(QDialog):
     def _check_updates(self):
         self.check_updates_button.setEnabled(False)
         self.check_updates_button.setText("CHECKING OFFICIAL RELEASES…")
-        self._update_task = Task(lambda: check_official_release("0.8.0"))
+        self._update_task = Task(lambda: check_official_release("0.9.0"))
         self._update_task.signals.done.connect(self._update_result)
         self._update_task.signals.failed.connect(self._update_error)
         QThreadPool.globalInstance().start(self._update_task)
