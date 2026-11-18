@@ -63,7 +63,8 @@ class Agent:
         private_intent = re.fullmatch(
             r"(?:hey\s+)?(?:jarvis[,! ]*)?"
             r"(?:(?:remember|save)(?:\s+for|\s+in)\s+.+?:\s*.+|"
-            r"(?:find|search)\s+.+?\s+(?:project\s+)?notes?\s+(?:for|about)\s+.+)",
+            r"(?:find|search)\s+.+?\s+(?:project\s+)?notes?\s+(?:for|about)\s+.+|"
+            r"(?:prepare|show|give me|create)\s+(?:my\s+)?.+?\s+(?:project\s+)?brief(?:ing)?[.!]?)",
             text.strip(), flags=re.I | re.S,
         )
         if private_intent:
